@@ -208,7 +208,7 @@ export function buildMcpServer(db: Db): McpServer {
         id: z.number().int().describe('task id'),
       },
     },
-    async ({ id }) => runTool(() => ({ task: transitionTaskStatus(db, id, 'active') })),
+    async ({ id }, extra) => runTool(() => ({ task: transitionTaskStatus(db, id, 'active', mcpActor(extra.sessionId)) })),
   );
 
   mcp.registerTool(
@@ -223,7 +223,7 @@ export function buildMcpServer(db: Db): McpServer {
         id: z.number().int().describe('task id'),
       },
     },
-    async ({ id }) => runTool(() => ({ task: transitionTaskStatus(db, id, 'done') })),
+    async ({ id }, extra) => runTool(() => ({ task: transitionTaskStatus(db, id, 'done', mcpActor(extra.sessionId)) })),
   );
 
   return mcp;

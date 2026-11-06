@@ -1,3 +1,5 @@
+import type { Actor } from './actors.js';
+import { recordStatusChange } from './changelog.js';
 import type { Db } from './db.js';
 import { assembleTask, requireTaskId, requireTaskRow, TaskError, type TaskView } from './tasks.js';
 
@@ -67,11 +69,11 @@ interface IntervalRow {
  * then the machine runs inside a transaction. Verb entry points call this with
  * a fixed target ('active' for start, 'done' for done).
  */
-export function transitionTaskStatus(db: Db, id: unknown, target: unknown): TaskView {
+export function transitionTaskStatus(db: Db, id: unknown, target: unknown, actor: Actor): TaskView {
   const taskId = requireTaskId(id);
   const statusTarget = parseStatusTarget(target);
   const run = db.transaction((): TaskView => {
-    applyStatusTransition(db, taskId, statusTarget);
+    applyStatusTransition(db, taskId, statusTarget, actor);
     const view = assembleTask(db, taskId);
     if (view === undefined) {
       throw new Error(`task ${taskId} missing right after status transition`);
@@ -86,7 +88,7 @@ export function transitionTaskStatus(db: Db, id: unknown, target: unknown): Task
  * updateTask nests this inside its own so status and field changes commit
  * (or roll back) together. Throws TaskError `conflict` for any illegal move.
  */
-export function applyStatusTransition(db: Db, taskId: number, target: TaskStatus): void {
+export function applyStatusTransition(db: Db, taskId: number, target: TaskStatus, actor: Actor): void {
   const current = requireTaskRow(db, taskId).status as TaskStatus;
   if (current === target) {
     throw new TaskError(
@@ -111,6 +113,7 @@ export function applyStatusTransition(db: Db, taskId: number, target: TaskStatus
     target,
     taskId,
   );
+  recordStatusChange(db, taskId, current, target, actor);
 }
 
 /** Parses a target status; anything outside the five statuses is `invalid`. */

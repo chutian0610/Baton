@@ -333,3 +333,32 @@ test('annotating does not write a change-log row (an annotation is its own recor
   expect(after.recentChanges).toHaveLength(before); // unchanged
   expect(after.annotations).toHaveLength(1);
 });
+
+// ------------------------------------------- status transitions (T4+T7 wiring)
+
+test('status transitions via MCP verbs are change-logged with the MCP actor', async () => {
+  const task = await makeTask('Lifecycle is recorded');
+  const client = await connectClient();
+  try {
+    await client.callTool({ name: 'task_start', arguments: { id: task.id } });
+  } finally {
+    await client.close();
+  }
+  const changes = (await detail(task.id)).recentChanges;
+  expect(changes[0].diff).toEqual({ status: { before: 'pending', after: 'active' } });
+  expect(changes[0].actor).toEqual({
+    kind: 'mcp',
+    clientName: MCP_CLIENT_NAME,
+    clientVersion: MCP_CLIENT_VERSION,
+    sessionId: expect.any(String),
+  });
+  expect(changes[1].diff.title.after).toBe('Lifecycle is recorded'); // the create row below it
+});
+
+test('status transitions via HTTP verbs are change-logged with the http actor', async () => {
+  const task = await makeTask('HTTP verb provenance');
+  await httpJson(fetch(`${daemon.baseUrl}/tasks/${task.id}/done`, { method: 'POST' }));
+  const changes = (await detail(task.id)).recentChanges;
+  expect(changes[0].diff).toEqual({ status: { before: 'pending', after: 'done' } });
+  expect(changes[0].actor).toEqual({ kind: 'http' });
+});

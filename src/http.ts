@@ -275,7 +275,7 @@ async function handleTasksRoute(
       return;
     }
     try {
-      const task = transitionTaskStatus(db, segments[0], segments[1] === 'start' ? 'active' : 'done');
+      const task = transitionTaskStatus(db, segments[0], segments[1] === 'start' ? 'active' : 'done', HTTP_ACTOR);
       res.writeHead(200, JSON_HEADERS);
       res.end(JSON.stringify({ task }));
     } catch (err) {
