@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { buildMcpServer } from './mcp.js';
+import { HTTP_ACTOR } from './actors.js';
+import { appendAnnotation } from './annotations.js';
 import { transitionTaskStatus } from './lifecycle.js';
 import { createProject, listProjects, ProjectError, resolveCurrentProject } from './projects.js';
 import { createTask, getTask, TaskError, updateTask } from './tasks.js';
@@ -12,16 +14,21 @@ import type { Db } from './db.js';
  * Plain node:http routing (ADR-0001; no framework — the SDK transport takes
  * Node req/res natively and the routes are few):
  *
- *   GET  /healthz            -> 200 {"status":"ok"}
- *   POST /projects           -> 201 project (name + bound paths)
- *   GET  /projects           -> 200 all projects with paths + open-task counts
- *   GET  /projects/current   -> 200 resolve ?cwd= to the Current Project
- *   POST /tasks              -> 201 task (project explicit or resolved from cwd)
- *   GET  /tasks/:id          -> 200 task + children + intervals + total active time
- *   PATCH /tasks/:id         -> 200 updated task (fields/reparent; status via the machine)
- *   POST /tasks/:id/start    -> 200 task (start verb: pending|waiting -> active)
- *   POST /tasks/:id/done     -> 200 task (done verb: any non-done -> done)
- *   *    /mcp                -> MCP streamable HTTP transport (stateful sessions)
+ *   GET  /healthz                 -> 200 {"status":"ok"}
+ *   POST /projects                -> 201 project (name + bound paths)
+ *   GET  /projects                -> 200 all projects with paths + open-task counts
+ *   GET  /projects/current        -> 200 resolve ?cwd= to the Current Project
+ *   POST /tasks                   -> 201 task (project explicit or resolved from cwd)
+ *   GET  /tasks/:id               -> 200 task + children + intervals + annotations + recent changes
+ *   PATCH /tasks/:id              -> 200 updated task (fields/reparent; status via the machine)
+ *   POST /tasks/:id/start         -> 200 task (start verb: pending|waiting -> active)
+ *   POST /tasks/:id/done          -> 200 task (done verb: any non-done -> done)
+ *   POST /tasks/:id/annotations   -> 201 annotation (append-only; no edit/delete route)
+ *   GET  /tasks/:id/annotations   -> 200 annotations, newest first
+ *   *    /mcp                     -> MCP streamable HTTP transport (stateful sessions)
+ *
+ * Direct HTTP calls record the constant Actor {kind: "http"} (src/actors.ts)
+ * on every change and annotation they cause.
  *
  * Stateful session handling follows the SDK's canonical wiring: one
  * StreamableHTTPServerTransport (plus a fresh McpServer) per initialize; the
@@ -168,7 +175,7 @@ async function handleProjectsRoute(
         return;
       }
       try {
-        const project = createProject(db, body);
+        const project = createProject(db, body, HTTP_ACTOR);
         res.writeHead(201, JSON_HEADERS);
         res.end(JSON.stringify({ project }));
       } catch (err) {
@@ -234,7 +241,7 @@ async function handleTasksRoute(
         return;
       }
       try {
-        const task = createTask(db, body);
+        const task = createTask(db, body, HTTP_ACTOR);
         res.writeHead(201, JSON_HEADERS);
         res.end(JSON.stringify({ task }));
       } catch (err) {
@@ -248,11 +255,19 @@ async function handleTasksRoute(
   }
 
   const rest = path.slice('/tasks/'.length);
+  const segments = rest.split('/');
+
+  // Sub-resource routes: annotations are append-only, so only POST (append)
+  // and GET (list) exist — edit/delete attempts get a 405 naming what is
+  // allowed, and deeper paths (e.g. /annotations/:aid) do not exist at all.
+  if (segments.length === 2 && segments[1] === 'annotations') {
+    await handleAnnotationsRoute(req, res, db, segments[0]);
+    return;
+  }
 
   // Verb endpoints (spec: start/done get verb-shaped calls; they map onto the
   // same status machine as PATCH {status}, so successes and errors are
   // identical for the same task and situation).
-  const segments = rest.split('/');
   if (segments.length === 2 && (segments[1] === 'start' || segments[1] === 'done')) {
     if (req.method !== 'POST') {
       res.writeHead(405, { allow: 'POST', ...JSON_HEADERS });
@@ -296,7 +311,7 @@ async function handleTasksRoute(
       return;
     }
     try {
-      const task = updateTask(db, id, body);
+      const task = updateTask(db, id, body, HTTP_ACTOR);
       res.writeHead(200, JSON_HEADERS);
       res.end(JSON.stringify({ task }));
     } catch (err) {
@@ -305,6 +320,51 @@ async function handleTasksRoute(
     return;
   }
   res.writeHead(405, { allow: 'GET, PATCH', ...JSON_HEADERS });
+  res.end(JSON.stringify({ error: 'method not allowed' }));
+}
+
+/**
+ * Annotation sub-resource of a task. Append-only by construction: POST
+ * appends (carrying the constant HTTP actor), GET lists; every other method
+ * is a 405 naming the allowed ones — no edit or delete route exists.
+ */
+async function handleAnnotationsRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  db: Db,
+  id: string,
+): Promise<void> {
+  if (req.method === 'POST') {
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch {
+      res.writeHead(400, JSON_HEADERS);
+      res.end(JSON.stringify({ error: 'invalid JSON body' }));
+      return;
+    }
+    const text = (typeof body === 'object' && body !== null ? (body as { body?: unknown }).body : undefined);
+    try {
+      const annotation = appendAnnotation(db, id, text, HTTP_ACTOR);
+      res.writeHead(201, JSON_HEADERS);
+      res.end(JSON.stringify({ annotation }));
+    } catch (err) {
+      sendTaskError(res, err);
+    }
+    return;
+  }
+  if (req.method === 'GET') {
+    try {
+      // route through getTask so unknown ids keep the exact task error text
+      const detail = getTask(db, id);
+      res.writeHead(200, JSON_HEADERS);
+      res.end(JSON.stringify({ annotations: detail.annotations }));
+    } catch (err) {
+      sendTaskError(res, err);
+    }
+    return;
+  }
+  res.writeHead(405, { allow: 'GET, POST', ...JSON_HEADERS });
   res.end(JSON.stringify({ error: 'method not allowed' }));
 }
 

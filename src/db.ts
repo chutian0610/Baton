@@ -102,6 +102,38 @@ export const MIGRATIONS: readonly Migration[] = [
       `);
     },
   },
+  {
+    version: 5,
+    name: 'annotations-and-change-log',
+    up: (db) => {
+      // Record-keeping (spec "Record-keeping" / CONTEXT.md): Annotations are
+      // timestamped append-only notes on a task; the change log is the
+      // append-only record of every mutation with its Actor. Both tables are
+      // INSERT/SELECT only — there is no UPDATE or DELETE code path anywhere,
+      // and tasks have no hard delete, so no ON DELETE action is declared.
+      // The actor is stored as a JSON value (see src/actors.ts); the diff is a
+      // JSON object {field: {before, after}}.
+      db.exec(`
+        CREATE TABLE annotations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          task_id INTEGER NOT NULL REFERENCES tasks(id),
+          body TEXT NOT NULL,
+          actor TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );
+        CREATE INDEX idx_annotations_task ON annotations(task_id);
+        CREATE TABLE change_log (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          entity TEXT NOT NULL CHECK (entity IN ('task', 'project')),
+          entity_id INTEGER NOT NULL,
+          diff TEXT NOT NULL,
+          actor TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );
+        CREATE INDEX idx_change_log_entity ON change_log(entity, entity_id);
+      `);
+    },
+  },
 ];
 
 /** Opens (creating if needed) `<dataDir>/data.db` and brings its schema to the latest version. */

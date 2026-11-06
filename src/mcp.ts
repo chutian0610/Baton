@@ -1,6 +1,8 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import * as z from 'zod/v4';
+import type { Actor } from './actors.js';
+import { appendAnnotation } from './annotations.js';
 import {
   createProject,
   listProjects,
@@ -14,7 +16,7 @@ import type { Db } from './db.js';
 /**
  * The MCP surface. ADR-0001: MCP is a thin adapter over the HTTP core, so
  * every tool maps 1:1 onto a core operation (src/projects.ts, src/tasks.ts,
- * src/lifecycle.ts) and returns the same JSON payload the HTTP route would;
+ * src/lifecycle.ts, src/annotations.ts) and returns the same JSON payload the HTTP route would;
  * domain failures surface as tool errors carrying the identical message text.
  *
  * Input schemas deliberately stay type-shaped (e.g. priority is a plain
@@ -24,11 +26,28 @@ import type { Db } from './db.js';
  * so they reach the core layer, which rejects them with a clear message
  * instead of zod silently stripping them.
  *
+ * Actor recording (spec "Actor recording"): every mutating tool passes the
+ * MCP actor — the handshake's clientInfo via `mcp.server.getClientVersion()`
+ * (populated after initialize, i.e. by the time any tool handler runs) plus
+ * the session id from the handler's `extra` — down into the core layer as a
+ * parameter, exactly like the HTTP surface passes its constant actor.
+ *
  * A fresh McpServer is built per MCP session (a server instance owns one
  * transport); the Db handle is shared across sessions and owned by the daemon.
  */
 export function buildMcpServer(db: Db): McpServer {
   const mcp = new McpServer({ name: 'baton', version: '0.1.0' });
+
+  /** The MCP actor for a request: clientInfo from the handshake + session id when the transport has one. */
+  const mcpActor = (sessionId?: string): Actor => {
+    const client = mcp.server.getClientVersion();
+    return {
+      kind: 'mcp',
+      clientName: client?.name ?? 'unknown',
+      ...(client?.version !== undefined ? { clientVersion: client.version } : {}),
+      ...(sessionId !== undefined ? { sessionId } : {}),
+    };
+  };
 
   mcp.registerTool(
     'project_create',
@@ -43,8 +62,8 @@ export function buildMcpServer(db: Db): McpServer {
         paths: z.array(z.string().min(1)).min(1),
       },
     },
-    async ({ name, paths }) =>
-      runTool(() => ({ project: createProject(db, { name, paths }) })),
+    async ({ name, paths }, extra) =>
+      runTool(() => ({ project: createProject(db, { name, paths }, mcpActor(extra.sessionId)) })),
   );
 
   mcp.registerTool(
@@ -99,7 +118,7 @@ export function buildMcpServer(db: Db): McpServer {
         deps: z.unknown().optional().describe('not supported yet: dependencies ship with a later change'),
       },
     },
-    async (args) => runTool(() => ({ task: createTask(db, args) })),
+    async (args, extra) => runTool(() => ({ task: createTask(db, args, mcpActor(extra.sessionId)) })),
   );
 
   mcp.registerTool(
@@ -108,8 +127,9 @@ export function buildMcpServer(db: Db): McpServer {
       title: 'Get task',
       description:
         'Read one task in full: all fields, a summary of its direct children (id, title, status) ordered by id, ' +
-        'its recorded Intervals (spans of being active, oldest first), and totalActiveMs (total active time; ' +
-        'an open Interval counts up to now).',
+        'its recorded Intervals (spans of being active, oldest first), totalActiveMs (total active time; ' +
+        'an open Interval counts up to now), its annotations (newest first; append-only), and its recent ' +
+        'changes (the last 20 change-log rows, newest first, with the actor that made each change).',
       inputSchema: {
         id: z.number().int().describe('task id'),
       },
@@ -155,7 +175,25 @@ export function buildMcpServer(db: Db): McpServer {
         project: z.unknown().optional().describe('not supported: moving a task between projects is rejected'),
       },
     },
-    async ({ id, ...fields }) => runTool(() => ({ task: updateTask(db, id, fields) })),
+    async ({ id, ...fields }, extra) => runTool(() => ({ task: updateTask(db, id, fields, mcpActor(extra.sessionId)) })),
+  );
+
+  mcp.registerTool(
+    'task_annotate',
+    {
+      title: 'Annotate task',
+      description:
+        'Append a timestamped Annotation to a task — the channel for interim findings and progress that ' +
+        'outlives a session. Annotations are append-only: they can never be edited or deleted, and each one ' +
+        'records the actor (this client) that wrote it. Appending an annotation is not a task change and does ' +
+        'not write a change-log entry.',
+      inputSchema: {
+        id: z.number().int().describe('task id'),
+        body: z.string().min(1).describe('annotation text'),
+      },
+    },
+    async ({ id, body }, extra) =>
+      runTool(() => ({ annotation: appendAnnotation(db, id, body, mcpActor(extra.sessionId)) })),
   );
 
   mcp.registerTool(
