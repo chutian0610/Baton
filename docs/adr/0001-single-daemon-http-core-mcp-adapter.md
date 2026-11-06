@@ -1,0 +1,3 @@
+# Single daemon: HTTP JSON core with MCP adapter
+
+Baton runs as a single daemon per machine, listening on `127.0.0.1` only, with no authentication — a personal, single-user, single-machine tool by design. The daemon exposes a plain HTTP JSON API as its core; MCP (streamable HTTP transport, mounted at `/mcp`) is a thin adapter layered on top. This lets multiple agent sessions share one task store and lets future clients (CLI, web UI, curl) consume the same core without MCP. We rejected a stdio MCP server: it would tie the store's lifetime to a single client process and give each session its own state.
