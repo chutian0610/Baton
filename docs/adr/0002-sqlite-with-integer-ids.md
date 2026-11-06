@@ -1,0 +1,3 @@
+# SQLite storage with incrementing integer IDs
+
+The task store is a single SQLite database (WAL mode) at `~/.baton/data.db`. Trees (recursive CTEs), the dependency DAG, transactional concurrent writes from multiple MCP sessions, and filtered queries are all SQLite's home turf; a JSON-file store (Taskwarrior's approach) would mean full loads on every query and hand-rolled locking. IDs are incrementing integers, not UUIDs: one machine, one database, no sync in scope — and short integer IDs are what LLM agents copy without transcription errors. Projects and tags follow the same scheme: unique name plus integer ID.
