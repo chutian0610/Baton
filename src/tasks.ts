@@ -316,7 +316,7 @@ export function updateTask(db: Db, id: unknown, input: unknown, actor: Actor): T
     }
 
     if (statusTarget !== undefined) {
-      applyStatusTransition(db, taskId, statusTarget, actor);
+      applyStatusTransition(db, taskId, statusTarget);
     }
 
     const updated = assembleTask(db, taskId);

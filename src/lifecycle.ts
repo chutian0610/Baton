@@ -66,14 +66,19 @@ interface IntervalRow {
 
 /**
  * Validates and applies one status transition: the id and target are parsed,
- * then the machine runs inside a transaction. Verb entry points call this with
- * a fixed target ('active' for start, 'done' for done).
+ * then the machine runs inside a transaction that also records the change-log
+ * row (spec: exactly one row per mutation; the PATCH path gets its row from
+ * updateTask's field diff instead, so `applyStatusTransition` itself stays
+ * recording-free). Verb entry points call this with a fixed target ('active'
+ * for start, 'done' for done).
  */
 export function transitionTaskStatus(db: Db, id: unknown, target: unknown, actor: Actor): TaskView {
   const taskId = requireTaskId(id);
   const statusTarget = parseStatusTarget(target);
   const run = db.transaction((): TaskView => {
-    applyStatusTransition(db, taskId, statusTarget, actor);
+    const before = requireTaskRow(db, taskId).status as TaskStatus;
+    applyStatusTransition(db, taskId, statusTarget);
+    recordStatusChange(db, taskId, before, statusTarget, actor);
     const view = assembleTask(db, taskId);
     if (view === undefined) {
       throw new Error(`task ${taskId} missing right after status transition`);
@@ -84,11 +89,14 @@ export function transitionTaskStatus(db: Db, id: unknown, target: unknown, actor
 }
 
 /**
- * Applies one already-parsed transition. The caller owns the transaction —
- * updateTask nests this inside its own so status and field changes commit
- * (or roll back) together. Throws TaskError `conflict` for any illegal move.
+ * Applies one already-parsed transition WITHOUT change-log recording — the
+ * caller owns both the transaction and the recording. updateTask nests this
+ * inside its own transaction so status and field changes commit (or roll
+ * back) together, with the status row coming from its field diff; verb entry
+ * points record via `transitionTaskStatus`. Throws TaskError `conflict` for
+ * any illegal move.
  */
-export function applyStatusTransition(db: Db, taskId: number, target: TaskStatus, actor: Actor): void {
+export function applyStatusTransition(db: Db, taskId: number, target: TaskStatus): void {
   const current = requireTaskRow(db, taskId).status as TaskStatus;
   if (current === target) {
     throw new TaskError(
@@ -113,7 +121,6 @@ export function applyStatusTransition(db: Db, taskId: number, target: TaskStatus
     target,
     taskId,
   );
-  recordStatusChange(db, taskId, current, target, actor);
 }
 
 /** Parses a target status; anything outside the five statuses is `invalid`. */
