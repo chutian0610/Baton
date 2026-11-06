@@ -313,17 +313,14 @@ test('hiddenUntil (the read-side spelling) is accepted as an alias on update', a
   expect(updated.task.hiddenUntil).toBe('2026-12-01T00:00:00Z');
 });
 
-test('status changes are rejected as not yet supported (create and update)', async () => {
+test('status cannot be set at create: new tasks start as pending', async () => {
   const project = await makeProject('status', ['/workspace/status']);
 
   const atCreate = await post({ title: 'Status at create', project: 'status', status: 'pending' });
   expect(atCreate.status).toBe(409);
-  expect(((await json(atCreate)) as { error: string }).error).toContain('not');
-
-  const task = await makeTask({ title: 'Status update', project: 'status' });
-  const onUpdate = await patch(task.id, { status: 'active' });
-  expect(onUpdate.status).toBe(409);
-  expect(((await json(onUpdate)) as { error: string }).error).toContain('not yet supported');
+  const message = ((await json(atCreate)) as { error: string }).error;
+  expect(message).toContain('status');
+  expect(message).toContain('pending');
 });
 
 test('project moves are rejected', async () => {

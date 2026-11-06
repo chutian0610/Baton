@@ -46,7 +46,9 @@ test('official MCP client initializes at /mcp and sees the project and task tool
       'project_current',
       'project_list',
       'task_create',
+      'task_done',
       'task_get',
+      'task_start',
       'task_update',
     ]);
   } finally {
@@ -323,13 +325,12 @@ test('task_update rejects an ancestor cycle with the cycle path in the message',
   }
 });
 
-test('task_update rejects status changes, project moves, and deps', async () => {
+test('task_update rejects project moves and deps', async () => {
   const client = await connectClient();
   try {
     const task = await mcpCreateTask(client, { title: 'Restricted', project: 'mcp-tasks' });
 
     for (const arguments_ of [
-      { id: task.task.id, status: 'active' },
       { id: task.task.id, project: 'mcp-cwd' },
       { id: task.task.id, deps: [task.task.id + 100] },
     ]) {
@@ -358,6 +359,119 @@ test('task tools report unknown ids as tool errors', async () => {
     const updated = await client.callTool({ name: 'task_update', arguments: { id: 999999, title: 'Nope' } });
     expect(updated.isError).toBe(true);
     expect(textOf(updated)).toContain('unknown task id');
+
+    for (const name of ['task_start', 'task_done']) {
+      const verbed = await client.callTool({ name, arguments: { id: 999999 } });
+      expect(verbed.isError).toBe(true);
+      expect(textOf(verbed)).toContain('unknown task id');
+    }
+  } finally {
+    await client.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Status machine over MCP: the verb tools and task_update's status path drive
+// the same machine as the HTTP API — same payloads on success, same message
+// text on errors.
+// ---------------------------------------------------------------------------
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test('task_start and task_done drive a full happy path with intervals', async () => {
+  const client = await connectClient();
+  try {
+    await client.callTool({ name: 'project_create', arguments: { name: 'mcp-lifecycle', paths: ['/workspace/mcp-lifecycle'] } });
+    const created = await mcpCreateTask(client, { title: 'Lifecycle over MCP', project: 'mcp-lifecycle' });
+
+    // start: pending -> active, one open Interval
+    const started = await client.callTool({ name: 'task_start', arguments: { id: created.task.id } });
+    expect(started.isError).toBeFalsy();
+    expect(jsonOf(started)).toMatchObject({ task: { id: created.task.id, status: 'active' } });
+
+    let detail = jsonOf(await client.callTool({ name: 'task_get', arguments: { id: created.task.id } })) as {
+      intervals: { endedAt: string | null }[];
+      totalActiveMs: number;
+    };
+    expect(detail.intervals).toHaveLength(1);
+    expect(detail.intervals[0].endedAt).toBeNull();
+
+    await sleep(30);
+
+    // done: active -> done, Interval closed, active time recorded
+    const done = await client.callTool({ name: 'task_done', arguments: { id: created.task.id } });
+    expect(done.isError).toBeFalsy();
+    expect(jsonOf(done)).toMatchObject({ task: { status: 'done' } });
+
+    detail = jsonOf(await client.callTool({ name: 'task_get', arguments: { id: created.task.id } })) as typeof detail;
+    expect(detail.intervals).toHaveLength(1);
+    expect(detail.intervals[0].endedAt).not.toBeNull();
+    expect(detail.totalActiveMs).toBeGreaterThanOrEqual(25);
+
+    // reopen through task_update's status path: pending, history intact
+    const reopened = await client.callTool({
+      name: 'task_update',
+      arguments: { id: created.task.id, status: 'pending' },
+    });
+    expect(reopened.isError).toBeFalsy();
+    expect(jsonOf(reopened)).toMatchObject({ task: { status: 'pending' } });
+
+    detail = jsonOf(await client.callTool({ name: 'task_get', arguments: { id: created.task.id } })) as typeof detail;
+    expect(detail.intervals).toHaveLength(1);
+    expect(detail.totalActiveMs).toBeGreaterThanOrEqual(25);
+
+    // a second run opens a second Interval
+    const restarted = await client.callTool({ name: 'task_start', arguments: { id: created.task.id } });
+    expect(restarted.isError).toBeFalsy();
+    detail = jsonOf(await client.callTool({ name: 'task_get', arguments: { id: created.task.id } })) as typeof detail;
+    expect(detail.intervals).toHaveLength(2);
+    expect(detail.intervals[1].endedAt).toBeNull();
+  } finally {
+    await client.close();
+  }
+});
+
+test('task_start on a done task errors with exactly the HTTP PATCH message', async () => {
+  const client = await connectClient();
+  try {
+    const created = await mcpCreateTask(client, { title: 'Parity target', project: 'mcp-lifecycle' });
+    const done = await client.callTool({ name: 'task_done', arguments: { id: created.task.id } });
+    expect(done.isError).toBeFalsy();
+
+    const viaVerb = await client.callTool({ name: 'task_start', arguments: { id: created.task.id } });
+    expect(viaVerb.isError).toBe(true);
+    const message = textOf(viaVerb);
+    expect(message).toContain('done');
+    expect(message).toContain('active');
+
+    // the same task, the same situation, the same message over HTTP PATCH
+    const response = await fetch(`${daemon.baseUrl}/tasks/${created.task.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'active' }),
+    });
+    expect(response.status).toBe(409);
+    expect(((await response.json()) as { error: string }).error).toBe(message);
+  } finally {
+    await client.close();
+  }
+});
+
+test('task_update status path rejects same-status and illegal moves like the machine', async () => {
+  const client = await connectClient();
+  try {
+    const task = await mcpCreateTask(client, { title: 'Machine over MCP', project: 'mcp-lifecycle' });
+
+    const sameStatus = await client.callTool({ name: 'task_update', arguments: { id: task.task.id, status: 'pending' } });
+    expect(sameStatus.isError).toBe(true);
+    expect(textOf(sameStatus)).toContain('already pending');
+
+    const started = await client.callTool({ name: 'task_update', arguments: { id: task.task.id, status: 'active' } });
+    expect(started.isError).toBeFalsy();
+
+    const illegal = await client.callTool({ name: 'task_update', arguments: { id: task.task.id, status: 'pending' } });
+    expect(illegal.isError).toBe(true);
+    expect(textOf(illegal)).toContain('cannot move from active to pending');
   } finally {
     await client.close();
   }

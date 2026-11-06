@@ -8,18 +8,19 @@ import {
   resolveCurrentProject,
 } from './projects.js';
 import { createTask, getTask, TaskError, updateTask } from './tasks.js';
+import { transitionTaskStatus } from './lifecycle.js';
 import type { Db } from './db.js';
 
 /**
  * The MCP surface. ADR-0001: MCP is a thin adapter over the HTTP core, so
- * every tool maps 1:1 onto a core operation (src/projects.ts, src/tasks.ts)
- * and returns the same JSON payload the HTTP route would; domain failures
- * surface as tool errors carrying the identical message text.
+ * every tool maps 1:1 onto a core operation (src/projects.ts, src/tasks.ts,
+ * src/lifecycle.ts) and returns the same JSON payload the HTTP route would;
+ * domain failures surface as tool errors carrying the identical message text.
  *
  * Input schemas deliberately stay type-shaped (e.g. priority is a plain
  * string) instead of encoding domain rules: those checks live in the core
  * layer so MCP tool errors and HTTP error bodies share the same text. The
- * not-yet-supported arguments (status, deps, project-on-update) ARE declared
+ * not-yet-supported arguments (deps, project-on-update) ARE declared
  * so they reach the core layer, which rejects them with a clear message
  * instead of zod silently stripping them.
  *
@@ -78,7 +79,8 @@ export function buildMcpServer(db: Db): McpServer {
         'The owning project comes from an explicit project (name or id), which wins, or from cwd via ' +
         "longest-prefix match over the projects' bound paths; passing neither (or an unbound cwd) errors. " +
         'A parent must be a task in the same project — a task tree lives inside one project. ' +
-        'New tasks start pending: status and deps are not supported yet and are rejected. ' +
+        'New tasks start pending: status at create is rejected (use task_update, task_start, or task_done to move it); ' +
+        'deps are not supported yet and are rejected. ' +
         'Tags are normalized to lowercase and deduplicated.',
       inputSchema: {
         title: z.string().describe('short, imperative task title'),
@@ -105,7 +107,9 @@ export function buildMcpServer(db: Db): McpServer {
     {
       title: 'Get task',
       description:
-        'Read one task in full: all fields plus a summary of its direct children (id, title, status), ordered by id.',
+        'Read one task in full: all fields, a summary of its direct children (id, title, status) ordered by id, ' +
+        'its recorded Intervals (spans of being active, oldest first), and totalActiveMs (total active time; ' +
+        'an open Interval counts up to now).',
       inputSchema: {
         id: z.number().int().describe('task id'),
       },
@@ -121,8 +125,12 @@ export function buildMcpServer(db: Db): McpServer {
         'Update a task: title, tags (replaces the set), due, priority, effort, hidden_until, and parent ' +
         '(reparenting within the same project; parent: null makes the task a root). ' +
         'Ancestor-cycle reparenting is rejected with the cycle path. ' +
+        'A provided status goes through the status machine: legal moves only — ' +
+        'start (pending|waiting -> active), waiting (pending|active -> waiting), done (any non-done), ' +
+        'drop (any non-dropped), reopen (done|dropped -> pending); same-status moves are rejected. ' +
+        'Entering active opens an Interval, leaving active (or entering done/dropped) closes it. ' +
         'Passing null clears an optional field; omitting a field leaves it unchanged. ' +
-        'Not supported and rejected: status (task lifecycle comes later), project moves, deps.',
+        'Not supported and rejected: project moves, deps.',
       inputSchema: {
         id: z.number().int().describe('task id'),
         title: z.string().optional(),
@@ -137,12 +145,47 @@ export function buildMcpServer(db: Db): McpServer {
           .nullable()
           .optional()
           .describe('new parent task id (same project); null makes this task a root'),
-        status: z.unknown().optional().describe('not supported yet: status transitions come with the task lifecycle'),
+        status: z
+          .string()
+          .optional()
+          .describe(
+            'target status ("pending", "active", "waiting", "done", "dropped"); validated against the status machine — illegal moves are rejected',
+          ),
         deps: z.unknown().optional().describe('not supported yet: dependencies ship with a later change'),
         project: z.unknown().optional().describe('not supported: moving a task between projects is rejected'),
       },
     },
     async ({ id, ...fields }) => runTool(() => ({ task: updateTask(db, id, fields) })),
+  );
+
+  mcp.registerTool(
+    'task_start',
+    {
+      title: 'Start task',
+      description:
+        'The start transition as a verb: pending or waiting -> active. Entering active opens an Interval ' +
+        'automatically. Identical semantics and error messages to task_update with status "active" ' +
+        '(an already-active task errors, since same-status transitions are rejected).',
+      inputSchema: {
+        id: z.number().int().describe('task id'),
+      },
+    },
+    async ({ id }) => runTool(() => ({ task: transitionTaskStatus(db, id, 'active') })),
+  );
+
+  mcp.registerTool(
+    'task_done',
+    {
+      title: 'Done task',
+      description:
+        'The done transition as a verb: any non-done status -> done, auto-closing any open Interval. ' +
+        'Identical semantics and error messages to task_update with status "done" ' +
+        '(an already-done task errors, since same-status transitions are rejected).',
+      inputSchema: {
+        id: z.number().int().describe('task id'),
+      },
+    },
+    async ({ id }) => runTool(() => ({ task: transitionTaskStatus(db, id, 'done') })),
   );
 
   return mcp;
