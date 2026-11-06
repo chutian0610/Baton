@@ -47,6 +47,40 @@ export const MIGRATIONS: readonly Migration[] = [
       `);
     },
   },
+  {
+    version: 3,
+    name: 'tasks',
+    up: (db) => {
+      // Tasks form a strictly single-parent tree (ADR-0004): parent_id is a
+      // nullable self-reference, and a subtree always lives inside one project
+      // (cross-project parents are rejected in the core layer before insert).
+      // Status transitions are a later change; here every task is created
+      // 'pending' and the CHECK keeps the column honest for that future.
+      // Dependencies (deps) are a later change too — no deps table yet.
+      db.exec(`
+        CREATE TABLE tasks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'active', 'waiting', 'done', 'dropped')),
+          project_id INTEGER NOT NULL REFERENCES projects(id),
+          parent_id INTEGER REFERENCES tasks(id),
+          due TEXT,
+          priority TEXT CHECK (priority IS NULL OR priority IN ('H', 'M', 'L')),
+          effort TEXT,
+          hidden_until TEXT,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+          updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );
+        CREATE TABLE task_tags (
+          task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+          tag TEXT NOT NULL,
+          PRIMARY KEY (task_id, tag)
+        );
+        CREATE INDEX idx_tasks_project ON tasks(project_id);
+        CREATE INDEX idx_tasks_parent ON tasks(parent_id);
+      `);
+    },
+  },
 ];
 
 /** Opens (creating if needed) `<dataDir>/data.db` and brings its schema to the latest version. */
