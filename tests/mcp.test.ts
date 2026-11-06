@@ -326,15 +326,12 @@ test('task_update rejects an ancestor cycle with the cycle path in the message',
   }
 });
 
-test('task_update rejects project moves and deps', async () => {
+test('task_update rejects project moves', async () => {
   const client = await connectClient();
   try {
     const task = await mcpCreateTask(client, { title: 'Restricted', project: 'mcp-tasks' });
 
-    for (const arguments_ of [
-      { id: task.task.id, project: 'mcp-cwd' },
-      { id: task.task.id, deps: [task.task.id + 100] },
-    ]) {
+    for (const arguments_ of [{ id: task.task.id, project: 'mcp-cwd' }]) {
       const result = await client.callTool({ name: 'task_update', arguments: arguments_ });
       expect(result.isError).toBe(true);
     }

@@ -134,6 +134,30 @@ export const MIGRATIONS: readonly Migration[] = [
       `);
     },
   },
+  {
+    version: 6,
+    name: 'task-deps',
+    up: (db) => {
+      // The Dependency DAG (ADR-0004: ordering lives in a directed graph
+      // orthogonal to the parent/child tree). One row = one edge "task depends
+      // on depends_on"; the pair is the primary key, so a dependency exists at
+      // most once (deps are a set). The extra index serves the reverse lookup
+      // (who depends on this task) used by cycle detection and blocked
+      // derivation. Tasks have no hard delete, so — like annotations and the
+      // change log — no ON DELETE action is declared. Cross-project edges,
+      // self-edges, and cycles are rejected in the core layer (src/deps.ts)
+      // before any row is written; blocked and progress are derived at read
+      // time and never stored (ADR-0003).
+      db.exec(`
+        CREATE TABLE task_deps (
+          task_id INTEGER NOT NULL REFERENCES tasks(id),
+          depends_on INTEGER NOT NULL REFERENCES tasks(id),
+          PRIMARY KEY (task_id, depends_on)
+        );
+        CREATE INDEX idx_task_deps_depends_on ON task_deps(depends_on);
+      `);
+    },
+  },
 ];
 
 /** Opens (creating if needed) `<dataDir>/data.db` and brings its schema to the latest version. */

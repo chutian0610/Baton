@@ -22,9 +22,9 @@ import type { Db } from './db.js';
  * Input schemas deliberately stay type-shaped (e.g. priority is a plain
  * string) instead of encoding domain rules: those checks live in the core
  * layer so MCP tool errors and HTTP error bodies share the same text. The
- * not-yet-supported arguments (deps, project-on-update) ARE declared
- * so they reach the core layer, which rejects them with a clear message
- * instead of zod silently stripping them.
+ * not-yet-supported argument (project-on-update) IS declared
+ * so it reaches the core layer, which rejects it with a clear message
+ * instead of zod silently stripping it.
  *
  * Actor recording (spec "Actor recording"): every mutating tool passes the
  * MCP actor — the handshake's clientInfo via `mcp.server.getClientVersion()`
@@ -94,12 +94,12 @@ export function buildMcpServer(db: Db): McpServer {
     {
       title: 'Create task',
       description:
-        'Create a Task with a title plus optional parent/project/tags/due/priority/effort/hidden_until/cwd. ' +
+        'Create a Task with a title plus optional parent/project/tags/deps/due/priority/effort/hidden_until/cwd. ' +
         'The owning project comes from an explicit project (name or id), which wins, or from cwd via ' +
         "longest-prefix match over the projects' bound paths; passing neither (or an unbound cwd) errors. " +
         'A parent must be a task in the same project — a task tree lives inside one project. ' +
-        'New tasks start pending: status at create is rejected (use task_update, task_start, or task_done to move it); ' +
-        'deps are not supported yet and are rejected. ' +
+        'deps name tasks this task depends on; each must exist and belong to the same project (dependencies never cross projects). ' +
+        'New tasks start pending: status at create is rejected (use task_update, task_start, or task_done to move it). ' +
         'Tags are normalized to lowercase and deduplicated.',
       inputSchema: {
         title: z.string().describe('short, imperative task title'),
@@ -109,13 +109,16 @@ export function buildMcpServer(db: Db): McpServer {
           .describe('explicit project name or id; wins over cwd when both are given'),
         parent: z.number().int().optional().describe('id of the parent task (same project)'),
         tags: z.array(z.string()).optional().describe('lowercased and deduplicated on save'),
+        deps: z
+          .array(z.number().int())
+          .optional()
+          .describe('ids of tasks this task depends on (same project only); sorted and deduplicated on save'),
         due: z.string().optional().describe('ISO-8601 date or datetime'),
         priority: z.string().optional().describe('one of "H", "M", "L"'),
         effort: z.string().optional().describe('free-text effort estimate'),
         hidden_until: z.string().optional().describe('ISO-8601 datetime; hides the task from default views until then'),
         cwd: z.string().optional().describe("caller's working directory; resolved to the Current Project when no explicit project is given"),
         status: z.unknown().optional().describe('not supported yet: new tasks start pending (lifecycle changes come later)'),
-        deps: z.unknown().optional().describe('not supported yet: dependencies ship with a later change'),
       },
     },
     async (args, extra) => runTool(() => ({ task: createTask(db, args, mcpActor(extra.sessionId)) })),
@@ -126,7 +129,10 @@ export function buildMcpServer(db: Db): McpServer {
     {
       title: 'Get task',
       description:
-        'Read one task in full: all fields, a summary of its direct children (id, title, status) ordered by id, ' +
+        'Read one task in full: all fields — including its dependency ids (deps), the derived blocked flag ' +
+        '(true while any dependency is neither done nor dropped; advisory only), and the derived progress ' +
+        '(done descendants ÷ non-dropped descendants; null when there is nothing below the task) — ' +
+        'a summary of its direct children (id, title, status) ordered by id, ' +
         'its recorded Intervals (spans of being active, oldest first), totalActiveMs (total active time; ' +
         'an open Interval counts up to now), its annotations (newest first; append-only), and its recent ' +
         'changes (the last 20 change-log rows, newest first, with the actor that made each change).',
@@ -142,19 +148,27 @@ export function buildMcpServer(db: Db): McpServer {
     {
       title: 'Update task',
       description:
-        'Update a task: title, tags (replaces the set), due, priority, effort, hidden_until, and parent ' +
-        '(reparenting within the same project; parent: null makes the task a root). ' +
+        'Update a task: title, tags (replaces the set), due, priority, effort, hidden_until, parent ' +
+        '(reparenting within the same project; parent: null makes the task a root), and deps ' +
+        '(replaces the dependency set; deps: null or [] clears it). Dependencies must reference tasks in the ' +
+        'same project, cannot include the task itself, and must keep the graph a DAG — cycle-forming dep sets ' +
+        'are rejected with the offending path. ' +
         'Ancestor-cycle reparenting is rejected with the cycle path. ' +
         'A provided status goes through the status machine: legal moves only — ' +
         'start (pending|waiting -> active), waiting (pending|active -> waiting), done (any non-done), ' +
         'drop (any non-dropped), reopen (done|dropped -> pending); same-status moves are rejected. ' +
         'Entering active opens an Interval, leaving active (or entering done/dropped) closes it. ' +
         'Passing null clears an optional field; omitting a field leaves it unchanged. ' +
-        'Not supported and rejected: project moves, deps.',
+        'Not supported and rejected: project moves.',
       inputSchema: {
         id: z.number().int().describe('task id'),
         title: z.string().optional(),
         tags: z.array(z.string()).optional().describe('full replacement tag set; lowercased and deduplicated'),
+        deps: z
+          .array(z.number().int())
+          .nullable()
+          .optional()
+          .describe('full replacement dependency set (task ids, same project only); null or [] clears'),
         due: z.string().nullable().optional().describe('ISO-8601 date or datetime; null clears'),
         priority: z.string().nullable().optional().describe('one of "H", "M", "L"; null clears'),
         effort: z.string().nullable().optional().describe('free-text estimate; null clears'),
@@ -171,7 +185,6 @@ export function buildMcpServer(db: Db): McpServer {
           .describe(
             'target status ("pending", "active", "waiting", "done", "dropped"); validated against the status machine — illegal moves are rejected',
           ),
-        deps: z.unknown().optional().describe('not supported yet: dependencies ship with a later change'),
         project: z.unknown().optional().describe('not supported: moving a task between projects is rejected'),
       },
     },
