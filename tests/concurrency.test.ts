@@ -227,18 +227,14 @@ test('parallel MCP sessions interleave with HTTP writes; every call on both surf
 
 // --------------------------------------------------------------- src finding
 
-test.skip('KNOWN SRC BUG (reported, not fixed here): a PATCH-status mutation is change-logged twice', async () => {
-  // Repro against implement/spec-1 (40f5c85): PATCH /tasks/:id {status} (and
-  // the MCP task_update status path, which funnels into the same updateTask)
-  // appends TWO identical change-log rows for ONE mutation:
-  //   1. applyStatusTransition -> recordStatusChange (src/lifecycle.ts)
-  //   2. updateTask's generic field diff (src/tasks.ts) — `status` is in
-  //      TRACKED_TASK_FIELDS, and the `before` snapshot predates the transition.
-  // The verb endpoints (POST /tasks/:id/start|done) log the same mutation
-  // exactly once, so the two surfaces disagree. Spec: the change log is
-  // "append-only rows for EVERY mutation" — one mutation, one row. Fixing it
-  // means touching src/ (out of scope for this tests-only ticket); when fixed,
-  // un-skip this test and it should pass as written.
+test('a PATCH-status mutation is change-logged exactly once (both surfaces agree)', async () => {
+  // Found by the concurrency/durability tests as a skipped repro (against
+  // 40f5c85): PATCH {status} used to append TWO rows (one from
+  // applyStatusTransition's recordStatusChange, one from updateTask's generic
+  // field diff) while the verbs logged one. Fixed by keeping
+  // applyStatusTransition recording-free: the PATCH path's row comes from the
+  // field diff, the verb paths record via transitionTaskStatus. One mutation,
+  // one row, on both surfaces.
   await assertOk(await request('POST', '/projects', { name: 'dup-row', paths: ['/workspace/dup-row'] }), 'project');
   const created = await assertOk(
     await request('POST', '/tasks', { title: 'Doubly logged', project: 'dup-row' }),
