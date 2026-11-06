@@ -10,6 +10,11 @@ import { fileURLToPath } from 'node:url';
  * BUILT daemon (`node dist/index.js`) as a real subprocess on a random port
  * with a fresh temp data dir, waits for readiness, and tears everything down.
  *
+ * Durability tests (T9) can pass a fixed `dataDir` (to restart a NEW daemon
+ * process on a previous dir), keep the dir on stop, and `kill()` for crash
+ * simulation. The existing `startDaemon()` / `startDaemon({ env })` /
+ * `daemon.stop()` call shapes are unchanged.
+ *
  * Readiness contract with the daemon:
  *   1. the daemon prints one JSON line `{"event":"listening",...,"port":N}`
  *      to stdout once the HTTP server is bound;
@@ -29,16 +34,40 @@ export interface DaemonHandle {
   dataDir: string;
   /** Path of the SQLite database file under the temp data dir. */
   dbPath: string;
-  /** SIGTERMs the daemon (SIGKILL fallback) and removes the temp data dir. */
-  stop: () => Promise<void>;
+  /**
+   * SIGTERMs the daemon (SIGKILL fallback) and waits for exit. Removes the
+   * temp data dir unless the caller provided it (options.dataDir) or asked to
+   * keep it (durability tests restart a new daemon on the same dir).
+   */
+  stop: (options?: StopDaemonOptions) => Promise<void>;
+  /**
+   * SIGKILLs the daemon immediately (crash simulation) and waits for exit.
+   * Never touches the data dir — the caller owns it after this.
+   */
+  kill: () => Promise<void>;
 }
 
-export async function startDaemon(options: { env?: Record<string, string> } = {}): Promise<DaemonHandle> {
+export interface StartDaemonOptions {
+  env?: Record<string, string>;
+  /**
+   * Use this exact data dir instead of a fresh temp one (durability tests
+   * restart a NEW daemon process on a previous dir). Created by the daemon if
+   * missing; never removed by the helper.
+   */
+  dataDir?: string;
+}
+
+export interface StopDaemonOptions {
+  /** Keep the helper-created data dir instead of removing it. */
+  keepDataDir?: boolean;
+}
+
+export async function startDaemon(options: StartDaemonOptions = {}): Promise<DaemonHandle> {
   if (!existsSync(DAEMON_ENTRY)) {
     throw new Error(`daemon entry ${DAEMON_ENTRY} not found — run \`npm run build\` before \`npm test\``);
   }
 
-  const dataDir = await mkdtemp(join(tmpdir(), 'baton-test-'));
+  const dataDir = options.dataDir ?? (await mkdtemp(join(tmpdir(), 'baton-test-')));
   const child = spawn(process.execPath, [DAEMON_ENTRY, '--port', '0', '--data', dataDir], {
     env: { ...process.env, ...options.env },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -88,7 +117,7 @@ export async function startDaemon(options: { env?: Record<string, string> } = {}
   const baseUrl = `http://127.0.0.1:${port}`;
   await waitForHealth(baseUrl);
 
-  const stop = async (): Promise<void> => {
+  const stop = async (stopOptions: StopDaemonOptions = {}): Promise<void> => {
     if (child.exitCode === null && !child.killed) {
       child.kill('SIGTERM');
       const killTimer = setTimeout(() => {
@@ -97,11 +126,21 @@ export async function startDaemon(options: { env?: Record<string, string> } = {}
       await exited;
       clearTimeout(killTimer);
     }
-    // rm -rf also removes the WAL/-shm sidecar files
-    await rm(dataDir, { recursive: true, force: true });
+    // rm -rf also removes the WAL/-shm sidecar files. A caller-provided data
+    // dir is never the helper's to delete.
+    if (options.dataDir === undefined && !stopOptions.keepDataDir) {
+      await rm(dataDir, { recursive: true, force: true });
+    }
   };
 
-  return { port, baseUrl, dataDir, dbPath: join(dataDir, 'data.db'), stop };
+  const kill = async (): Promise<void> => {
+    if (child.exitCode === null && !child.killed) {
+      child.kill('SIGKILL');
+    }
+    await exited;
+  };
+
+  return { port, baseUrl, dataDir, dbPath: join(dataDir, 'data.db'), stop, kill };
 }
 
 function isListeningEvent(message: unknown): message is { event: 'listening'; port: number } {
