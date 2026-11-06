@@ -1,0 +1,110 @@
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import Database from 'better-sqlite3';
+
+/**
+ * SQLite layer: one database file per data dir, WAL mode, and a linear
+ * schema-version migration machinery driven by the `user_version` pragma.
+ *
+ * Later tickets append entries to MIGRATIONS; nothing else calls migrations
+ * by hand. Opening an up-to-date database applies nothing.
+ */
+export type Db = Database.Database;
+
+export interface Migration {
+  /** Schema version this migration brings the database to; must be unique and increasing. */
+  version: number;
+  name: string;
+  up: (db: Db) => void;
+}
+
+export const MIGRATIONS: readonly Migration[] = [
+  {
+    version: 1,
+    name: 'meta-table',
+    up: (db) => {
+      db.exec('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    },
+  },
+  {
+    version: 2,
+    name: 'projects',
+    up: (db) => {
+      // Paths are stored in canonical form (absolute, no trailing slash) and
+      // are unique across projects: the PRIMARY KEY enforces "a path binds to
+      // at most one project" (spec: Current Project resolution).
+      db.exec(`
+        CREATE TABLE projects (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );
+        CREATE TABLE project_paths (
+          path TEXT PRIMARY KEY,
+          project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_project_paths_project ON project_paths(project_id);
+      `);
+    },
+  },
+  {
+    version: 3,
+    name: 'tasks',
+    up: (db) => {
+      // Tasks form a strictly single-parent tree (ADR-0004): parent_id is a
+      // nullable self-reference, and a subtree always lives inside one project
+      // (cross-project parents are rejected in the core layer before insert).
+      // Status transitions are a later change; here every task is created
+      // 'pending' and the CHECK keeps the column honest for that future.
+      // Dependencies (deps) are a later change too — no deps table yet.
+      db.exec(`
+        CREATE TABLE tasks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'active', 'waiting', 'done', 'dropped')),
+          project_id INTEGER NOT NULL REFERENCES projects(id),
+          parent_id INTEGER REFERENCES tasks(id),
+          due TEXT,
+          priority TEXT CHECK (priority IS NULL OR priority IN ('H', 'M', 'L')),
+          effort TEXT,
+          hidden_until TEXT,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+          updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );
+        CREATE TABLE task_tags (
+          task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+          tag TEXT NOT NULL,
+          PRIMARY KEY (task_id, tag)
+        );
+        CREATE INDEX idx_tasks_project ON tasks(project_id);
+        CREATE INDEX idx_tasks_parent ON tasks(parent_id);
+      `);
+    },
+  },
+];
+
+/** Opens (creating if needed) `<dataDir>/data.db` and brings its schema to the latest version. */
+export function openDatabase(dataDir: string): Db {
+  mkdirSync(dataDir, { recursive: true });
+  const db = new Database(join(dataDir, 'data.db'));
+  db.pragma('journal_mode = WAL');
+  db.pragma('busy_timeout = 5000');
+  db.pragma('foreign_keys = ON');
+  migrate(db);
+  return db;
+}
+
+export function migrate(db: Db): void {
+  const applied = schemaVersion(db);
+  const pending = [...MIGRATIONS].sort((a, b) => a.version - b.version).filter((m) => m.version > applied);
+  for (const migration of pending) {
+    db.transaction(() => {
+      migration.up(db);
+      db.pragma(`user_version = ${migration.version}`);
+    })();
+  }
+}
+
+export function schemaVersion(db: Db): number {
+  return db.pragma('user_version', { simple: true }) as number;
+}
