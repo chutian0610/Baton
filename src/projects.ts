@@ -1,3 +1,5 @@
+import type { Actor } from './actors.js';
+import { recordChange } from './changelog.js';
 import type { Db } from './db.js';
 
 /**
@@ -65,8 +67,11 @@ interface PathClashRow {
  * Creates a Project with a unique name and one or more bound paths.
  * Rejects (ProjectError) on: malformed input (`invalid`), a name that already
  * exists (`duplicate`), or a path already bound to a project (`duplicate`).
+ *
+ * The creation is recorded on the change log (every field as `after`) with
+ * the caller's Actor, in the same transaction.
  */
-export function createProject(db: Db, input: unknown): ProjectView {
+export function createProject(db: Db, input: unknown, actor: Actor): ProjectView {
   const { name, paths } = (typeof input === 'object' && input !== null ? input : {}) as {
     name?: unknown;
     paths?: unknown;
@@ -101,6 +106,13 @@ export function createProject(db: Db, input: unknown): ProjectView {
     if (project === undefined) {
       throw new Error(`project ${id} missing right after insert`);
     }
+    recordChange(
+      db,
+      'project',
+      id,
+      { name: { before: null, after: project.name }, paths: { before: null, after: project.paths } },
+      actor,
+    );
     return project;
   });
   return create();

@@ -1,3 +1,6 @@
+import type { Actor } from './actors.js';
+import { listAnnotations, type AnnotationView } from './annotations.js';
+import { recentChanges, recordChange, type ChangeLogView, type FieldDiff } from './changelog.js';
 import type { Db } from './db.js';
 import { ProjectError, resolveCurrentProject } from './projects.js';
 
@@ -14,6 +17,11 @@ import { ProjectError, resolveCurrentProject } from './projects.js';
  * every task is created `pending` and status changes are rejected explicitly
  * until the lifecycle change replaces that rejection — and dependencies,
  * which ship with a later change and are rejected when passed.
+ *
+ * Every mutation appends exactly one change-log row (src/changelog.ts) with
+ * the field-level diff and the Actor, inside the same transaction as the
+ * mutation itself. The Actor is a parameter threaded from the calling
+ * surface — this layer never derives it on its own.
  */
 
 /**
@@ -54,11 +62,15 @@ export interface TaskView {
   updatedAt: string;
 }
 
-/** `task_get`'s answer: the task plus a summary of its direct children. */
+/** `task_get`'s answer: the task plus children, annotations, and recent changes. */
 export interface TaskDetail {
   task: TaskView;
   /** Direct children (id, title, status), ordered by id. */
   children: ChildSummary[];
+  /** Annotations, newest first (append-only — there is no edit or delete). */
+  annotations: AnnotationView[];
+  /** The last 20 change-log rows for this task, newest first (creation included). */
+  recentChanges: ChangeLogView[];
 }
 
 export interface ChildSummary {
@@ -95,8 +107,11 @@ const TASK_COLUMNS =
  * must exist and belong to the same project — a tree lives inside one
  * project (ADR-0004). New tasks start `pending`; `status` and `deps` in the
  * input are rejected (not yet supported).
+ *
+ * The creation is recorded on the change log (every field as `after`) with
+ * the caller's Actor, in the same transaction.
  */
-export function createTask(db: Db, input: unknown): TaskView {
+export function createTask(db: Db, input: unknown, actor: Actor): TaskView {
   const body = asBody(input);
   if (body.status !== undefined) {
     throw new TaskError(
@@ -143,6 +158,7 @@ export function createTask(db: Db, input: unknown): TaskView {
     if (created === undefined) {
       throw new Error(`task ${id} missing right after insert`);
     }
+    recordChange(db, 'task', id, taskCreateDiff(created), actor);
     return created;
   });
   return create();
@@ -160,8 +176,13 @@ export function createTask(db: Db, input: unknown): TaskView {
  * `deps`. Reparenting that would make a task its own ancestor is rejected
  * with the cycle path in the message. Only provided keys change; null clears
  * an optional field.
+ *
+ * The update is recorded on the change log with exactly the fields that
+ * actually changed (absent -> value counts as a change) and the caller's
+ * Actor, in the same transaction. Status transitions are recorded by their
+ * own paths (see recordStatusChange) once the lifecycle change lands.
  */
-export function updateTask(db: Db, id: unknown, input: unknown): TaskView {
+export function updateTask(db: Db, id: unknown, input: unknown, actor: Actor): TaskView {
   const taskId = requireTaskId(id);
   const body = asBody(input);
   if (body.status !== undefined) {
@@ -196,6 +217,10 @@ export function updateTask(db: Db, id: unknown, input: unknown): TaskView {
 
   const update = db.transaction((): TaskView => {
     const current = requireTaskRow(db, taskId);
+    const before = assembleTask(db, taskId); // full view (incl. tags) for the change diff
+    if (before === undefined) {
+      throw new Error(`task ${taskId} missing right after read`);
+    }
 
     let newParentId: number | null | undefined;
     if (parent !== undefined) {
@@ -264,6 +289,7 @@ export function updateTask(db: Db, id: unknown, input: unknown): TaskView {
     if (updated === undefined) {
       throw new Error(`task ${taskId} missing right after update`);
     }
+    recordChange(db, 'task', taskId, taskUpdateDiff(before, updated), actor);
     return updated;
   });
   return update();
@@ -273,7 +299,7 @@ export function updateTask(db: Db, id: unknown, input: unknown): TaskView {
 // Detail read
 // --------------------------------------------------------------------------
 
-/** Returns the task plus its direct children summary; unknown ids are a 404. */
+/** Returns the task plus children, annotations, and recent changes; unknown ids are a 404. */
 export function getTask(db: Db, id: unknown): TaskDetail {
   const taskId = requireTaskId(id);
   const task = assembleTask(db, taskId);
@@ -283,7 +309,59 @@ export function getTask(db: Db, id: unknown): TaskDetail {
   const children = db
     .prepare('SELECT id, title, status FROM tasks WHERE parent_id = ? ORDER BY id')
     .all(taskId) as ChildSummary[];
-  return { task, children };
+  return {
+    task,
+    children,
+    annotations: listAnnotations(db, taskId),
+    recentChanges: recentChanges(db, 'task', taskId),
+  };
+}
+
+// --------------------------------------------------------------------------
+// Change recording (src/changelog.ts): exactly one change-log row per
+// mutation, written inside the mutation's own transaction.
+// --------------------------------------------------------------------------
+
+/**
+ * Task fields tracked on the change log, named as in the TaskView the API
+ * surfaces return. Timestamps (createdAt/updatedAt) are metadata, not
+ * mutations, and stay off the log.
+ */
+const TRACKED_TASK_FIELDS = [
+  'title',
+  'status',
+  'projectId',
+  'parentId',
+  'tags',
+  'due',
+  'priority',
+  'effort',
+  'hiddenUntil',
+] as const;
+
+/** Creation diff: every tracked field under `after` (`before: null` = absent before). */
+function taskCreateDiff(task: TaskView): FieldDiff {
+  const diff: FieldDiff = {};
+  for (const field of TRACKED_TASK_FIELDS) {
+    diff[field] = { before: null, after: task[field] };
+  }
+  return diff;
+}
+
+/** Update diff: only the fields whose value actually changed (absent -> value counts). */
+function taskUpdateDiff(before: TaskView, after: TaskView): FieldDiff {
+  const diff: FieldDiff = {};
+  for (const field of TRACKED_TASK_FIELDS) {
+    if (!sameValue(before[field], after[field])) {
+      diff[field] = { before: before[field], after: after[field] };
+    }
+  }
+  return diff;
+}
+
+/** JSON-value equality — every tracked field is a JSON scalar or a sorted string array. */
+function sameValue(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 // --------------------------------------------------------------------------
