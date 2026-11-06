@@ -333,19 +333,6 @@ test('project moves are rejected', async () => {
   expect(((await json(response)) as { error: string }).error).toContain('not supported');
 });
 
-test('deps are rejected as unsupported on create and update', async () => {
-  const project = await makeProject('deps', ['/workspace/deps']);
-
-  const atCreate = await post({ title: 'Deps at create', project: 'deps', deps: [42] });
-  expect(atCreate.status).toBe(409);
-  expect(((await json(atCreate)) as { error: string }).error).toContain('dependencies');
-
-  const task = await makeTask({ title: 'Deps update', project: 'deps' });
-  const onUpdate = await patch(task.id, { deps: [task.id + 1] });
-  expect(onUpdate.status).toBe(409);
-  expect(((await json(onUpdate)) as { error: string }).error).toContain('dependencies');
-});
-
 test('priority must be H, M, or L', async () => {
   const project = await makeProject('priority', ['/workspace/priority']);
 

@@ -2,6 +2,7 @@ import type { Actor } from './actors.js';
 import { listAnnotations, type AnnotationView } from './annotations.js';
 import { recentChanges, recordChange, type ChangeLogView, type FieldDiff } from './changelog.js';
 import type { Db } from './db.js';
+import { deriveBlocked, deriveProgress, findDependencyCyclePath, listDeps, parseDeps, validateDeps, writeDeps } from './deps.js';
 import { applyStatusTransition, parseStatusTarget, taskIntervals, type IntervalView } from './lifecycle.js';
 import { ProjectError, resolveCurrentProject } from './projects.js';
 
@@ -17,8 +18,10 @@ import { ProjectError, resolveCurrentProject } from './projects.js';
  * detail read (including the recorded Intervals and total active time). Status
  * transitions live in src/lifecycle.ts — the status machine — and are applied
  * by updateTask (the PATCH / task_update status path) and the verb entry
- * points (start/done). Dependencies ship with a later change and are rejected
- * when passed.
+ * points (start/done). Dependencies (the DAG of ADR-0004) and the values
+ * derived at read time from them and from the tree (blocked, progress —
+ * ADR-0003) live in src/deps.ts and surface on every TaskView this module
+ * assembles.
  *
  * Every mutation appends exactly one change-log row (src/changelog.ts) with
  * the field-level diff and the Actor, inside the same transaction as the
@@ -31,9 +34,9 @@ import { ProjectError, resolveCurrentProject } from './projects.js';
  * `conflict` | `unsupported` -> 409.
  *
  * `unsupported` carries the rule-based refusals of this stage (status
- * changes, project moves, deps): the request is well-formed, but the current
- * version will not perform it. Grouping those with `conflict` under 409 keeps
- * 400 strictly "malformed payload".
+ * changes at create, project moves): the request is well-formed, but the
+ * current version will not perform it. Grouping those with `conflict` under
+ * 409 keeps 400 strictly "malformed payload".
  */
 export type TaskErrorCode = 'invalid' | 'not-found' | 'unbound' | 'conflict' | 'unsupported';
 
@@ -56,6 +59,16 @@ export interface TaskView {
   parentId: number | null;
   /** Lowercase, deduplicated, sorted. */
   tags: string[];
+  /** Dependency ids (the task's edges in the DAG), sorted. */
+  deps: number[];
+  /** Derived at read time (never stored): some dependency is neither done nor dropped. */
+  blocked: boolean;
+  /**
+   * Derived at read time (never stored): done descendants ÷ non-dropped
+   * descendants. `null` for tasks with nothing below them to measure (leaves;
+   * everything below dropped).
+   */
+  progress: number | null;
   due: string | null;
   priority: string | null;
   effort: string | null;
@@ -111,8 +124,12 @@ const TASK_COLUMNS =
  * wins; otherwise `cwd` is resolved to the Current Project via the projects
  * resolver; neither being usable is a domain error naming the fix. A `parent`
  * must exist and belong to the same project — a tree lives inside one
- * project (ADR-0004). New tasks start `pending`; `status` and `deps` in the
- * input are rejected (not yet supported).
+ * project (ADR-0004). New tasks start `pending`; `status` in the input is
+ * rejected (not yet supported). `deps` name tasks the new task depends on:
+ * each must exist and belong to the same project. Creation can never form a
+ * dependency cycle — no stored edge can point at a task that did not exist
+ * when its dependency was written — so only the per-edge rules are checked
+ * (before the insert, which also makes a guessed future id fail as unknown).
  *
  * The creation is recorded on the change log (every field as `after`) with
  * the caller's Actor, in the same transaction.
@@ -125,15 +142,10 @@ export function createTask(db: Db, input: unknown, actor: Actor): TaskView {
       'status cannot be set when creating a task: new tasks start as pending; move it afterwards with task_update (status) or the start/done verbs',
     );
   }
-  if (body.deps !== undefined) {
-    throw new TaskError(
-      'unsupported',
-      'dependencies are not supported yet (deps ship with a later change); omit "deps" for now',
-    );
-  }
 
   const title = parseTitle(body.title);
   const tags = parseTags(body.tags);
+  const deps = parseDeps(body.deps); // absent/null both mean: no dependencies
   const due = parseDatetime(body.due, 'due');
   const priority = parsePriority(body.priority);
   const effort = parseEffort(body.effort);
@@ -152,6 +164,7 @@ export function createTask(db: Db, input: unknown, actor: Actor): TaskView {
           'a task tree must live inside one project',
       );
     }
+    validateDeps(db, undefined, owner.id, deps);
 
     const id = Number(
       db
@@ -159,6 +172,7 @@ export function createTask(db: Db, input: unknown, actor: Actor): TaskView {
         .run(title, owner.id, parent, due, priority, effort, hiddenUntil).lastInsertRowid,
     );
     writeTags(db, id, tags);
+    writeDeps(db, id, deps);
 
     const created = assembleTask(db, id);
     if (created === undefined) {
@@ -176,31 +190,29 @@ export function createTask(db: Db, input: unknown, actor: Actor): TaskView {
 
 /**
  * Updates a Task's structural and field attributes: title, tags, due,
- * priority, effort, hidden_until, and parent (reparenting; null makes the
- * task a root). A provided `status` goes through the status machine
- * (src/lifecycle.ts) inside the same transaction, so field and status changes
- * commit or roll back together; illegal transitions are `conflict` errors
- * naming the current status. Rejected with `unsupported`:
- * `project`/`project_id` (a tree cannot move between projects in v1) and
- * `deps`. Reparenting that would make a task its own ancestor is rejected
+ * priority, effort, hidden_until, parent (reparenting; null makes the task a
+ * root), and deps (the dependency set, replaced wholesale like tags — `null`
+ * or `[]` clears it). Dependencies must reference existing tasks in the same
+ * project, must not include the task itself, and must keep the graph a DAG:
+ * a dep set that would form a cycle is rejected with the offending path in
+ * the message, before anything is written. A provided `status` goes through
+ * the status machine (src/lifecycle.ts) inside the same transaction, so
+ * field, dep, and status changes commit or roll back together; illegal
+ * transitions are `conflict` errors naming the current status. Rejected with
+ * `unsupported`: `project`/`project_id` (a tree cannot move between projects
+ * in v1). Reparenting that would make a task its own ancestor is rejected
  * with the cycle path in the message. Only provided keys change; null clears
  * an optional field.
  *
  * The update is recorded on the change log with exactly the fields that
  * actually changed (absent -> value counts as a change) and the caller's
  * Actor, in the same transaction. Status transitions are recorded by their
- * own paths (see recordStatusChange) once the lifecycle change lands.
+ * own paths (see recordStatusChange).
  */
 export function updateTask(db: Db, id: unknown, input: unknown, actor: Actor): TaskView {
   const taskId = requireTaskId(id);
   const body = asBody(input);
   const statusTarget = body.status === undefined ? undefined : parseStatusTarget(body.status);
-  if (body.deps !== undefined) {
-    throw new TaskError(
-      'unsupported',
-      'dependencies are not supported yet (deps ship with a later change); omit "deps" for now',
-    );
-  }
   if (body.project !== undefined || body.project_id !== undefined || body.projectId !== undefined) {
     throw new TaskError(
       'unsupported',
@@ -210,6 +222,7 @@ export function updateTask(db: Db, id: unknown, input: unknown, actor: Actor): T
 
   const title = body.title === undefined ? undefined : parseTitle(body.title);
   const tags = body.tags === undefined ? undefined : parseTags(body.tags);
+  const deps = body.deps === undefined ? undefined : parseDeps(body.deps);
   const due = body.due === undefined ? undefined : parseDatetime(body.due, 'due');
   const priority = body.priority === undefined ? undefined : parsePriority(body.priority);
   const effort = body.effort === undefined ? undefined : parseEffort(body.effort);
@@ -289,6 +302,19 @@ export function updateTask(db: Db, id: unknown, input: unknown, actor: Actor): T
       writeTags(db, taskId, tags);
     }
 
+    if (deps !== undefined) {
+      validateDeps(db, taskId, current.project_id, deps);
+      const cyclePath = findDependencyCyclePath(db, taskId, deps);
+      if (cyclePath !== undefined) {
+        throw new TaskError(
+          'conflict',
+          `task ${taskId} depending on task ${cyclePath[1]} would create a dependency cycle ` +
+            `(cycle: ${cyclePath.join(' -> ')})`,
+        );
+      }
+      writeDeps(db, taskId, deps);
+    }
+
     if (statusTarget !== undefined) {
       applyStatusTransition(db, taskId, statusTarget, actor);
     }
@@ -344,6 +370,7 @@ const TRACKED_TASK_FIELDS = [
   'projectId',
   'parentId',
   'tags',
+  'deps',
   'due',
   'priority',
   'effort',
@@ -465,6 +492,7 @@ export function assembleTask(db: Db, id: number): TaskView | undefined {
     return undefined;
   }
   const tagRows = db.prepare('SELECT tag FROM task_tags WHERE task_id = ? ORDER BY tag').all(id) as { tag: string }[];
+  const deps = listDeps(db, id);
   return {
     id: row.id,
     title: row.title,
@@ -473,6 +501,9 @@ export function assembleTask(db: Db, id: number): TaskView | undefined {
     projectName: projectNameById(db, row.project_id),
     parentId: row.parent_id,
     tags: tagRows.map((tagRow) => tagRow.tag),
+    deps,
+    blocked: deriveBlocked(db, deps),
+    progress: deriveProgress(db, id),
     due: row.due,
     priority: row.priority,
     effort: row.effort,

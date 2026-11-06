@@ -209,6 +209,7 @@ test('task creation writes exactly one change-log row with every field as "after
     projectId: { before: null, after: expect.any(Number) },
     parentId: { before: null, after: null },
     tags: { before: null, after: ['audit'] },
+    deps: { before: null, after: [] },
     due: { before: null, after: '2026-12-24T00:00:00Z' },
     priority: { before: null, after: 'H' },
     effort: { before: null, after: '3h' },
