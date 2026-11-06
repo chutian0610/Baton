@@ -1,4 +1,5 @@
 import type { Db } from './db.js';
+import { applyStatusTransition, parseStatusTarget, taskIntervals, type IntervalView } from './lifecycle.js';
 import { ProjectError, resolveCurrentProject } from './projects.js';
 
 /**
@@ -8,12 +9,13 @@ import { ProjectError, resolveCurrentProject } from './projects.js';
  * `code` onto its transport (HTTP status / MCP tool error) while keeping the
  * message text identical.
  *
- * Scope of this layer (task-structure change): creation, the single-parent
- * tree (ADR-0004: nesting, reparenting, cycle rejection, one project per
- * tree), field updates, and the detail read. NOT here: status transitions —
- * every task is created `pending` and status changes are rejected explicitly
- * until the lifecycle change replaces that rejection — and dependencies,
- * which ship with a later change and are rejected when passed.
+ * Scope of this layer: creation, the single-parent tree (ADR-0004: nesting,
+ * reparenting, cycle rejection, one project per tree), field updates, and the
+ * detail read (including the recorded Intervals and total active time). Status
+ * transitions live in src/lifecycle.ts — the status machine — and are applied
+ * by updateTask (the PATCH / task_update status path) and the verb entry
+ * points (start/done). Dependencies ship with a later change and are rejected
+ * when passed.
  */
 
 /**
@@ -54,11 +56,15 @@ export interface TaskView {
   updatedAt: string;
 }
 
-/** `task_get`'s answer: the task plus a summary of its direct children. */
+/** `task_get`'s answer: the task, its direct children, and its recorded Intervals. */
 export interface TaskDetail {
   task: TaskView;
   /** Direct children (id, title, status), ordered by id. */
   children: ChildSummary[];
+  /** Recorded active spans, oldest first (spec: task_get shows intervals). */
+  intervals: IntervalView[];
+  /** Total time spent active in milliseconds; an open Interval counts up to now. */
+  totalActiveMs: number;
 }
 
 export interface ChildSummary {
@@ -101,7 +107,7 @@ export function createTask(db: Db, input: unknown): TaskView {
   if (body.status !== undefined) {
     throw new TaskError(
       'unsupported',
-      'status cannot be set when creating a task: new tasks start as pending, and status transitions are not yet supported',
+      'status cannot be set when creating a task: new tasks start as pending; move it afterwards with task_update (status) or the start/done verbs',
     );
   }
   if (body.deps !== undefined) {
@@ -155,8 +161,11 @@ export function createTask(db: Db, input: unknown): TaskView {
 /**
  * Updates a Task's structural and field attributes: title, tags, due,
  * priority, effort, hidden_until, and parent (reparenting; null makes the
- * task a root). Rejected with `unsupported`: `status` (lifecycle change),
- * `project`/`project_id` (a tree cannot move between projects in v1), and
+ * task a root). A provided `status` goes through the status machine
+ * (src/lifecycle.ts) inside the same transaction, so field and status changes
+ * commit or roll back together; illegal transitions are `conflict` errors
+ * naming the current status. Rejected with `unsupported`:
+ * `project`/`project_id` (a tree cannot move between projects in v1) and
  * `deps`. Reparenting that would make a task its own ancestor is rejected
  * with the cycle path in the message. Only provided keys change; null clears
  * an optional field.
@@ -164,12 +173,7 @@ export function createTask(db: Db, input: unknown): TaskView {
 export function updateTask(db: Db, id: unknown, input: unknown): TaskView {
   const taskId = requireTaskId(id);
   const body = asBody(input);
-  if (body.status !== undefined) {
-    throw new TaskError(
-      'unsupported',
-      'status changes are not yet supported (the task lifecycle ships with a later change); tasks are created pending',
-    );
-  }
+  const statusTarget = body.status === undefined ? undefined : parseStatusTarget(body.status);
   if (body.deps !== undefined) {
     throw new TaskError(
       'unsupported',
@@ -260,6 +264,10 @@ export function updateTask(db: Db, id: unknown, input: unknown): TaskView {
       writeTags(db, taskId, tags);
     }
 
+    if (statusTarget !== undefined) {
+      applyStatusTransition(db, taskId, statusTarget);
+    }
+
     const updated = assembleTask(db, taskId);
     if (updated === undefined) {
       throw new Error(`task ${taskId} missing right after update`);
@@ -273,7 +281,7 @@ export function updateTask(db: Db, id: unknown, input: unknown): TaskView {
 // Detail read
 // --------------------------------------------------------------------------
 
-/** Returns the task plus its direct children summary; unknown ids are a 404. */
+/** Returns the task, its direct children, and its intervals; unknown ids are a 404. */
 export function getTask(db: Db, id: unknown): TaskDetail {
   const taskId = requireTaskId(id);
   const task = assembleTask(db, taskId);
@@ -283,7 +291,8 @@ export function getTask(db: Db, id: unknown): TaskDetail {
   const children = db
     .prepare('SELECT id, title, status FROM tasks WHERE parent_id = ? ORDER BY id')
     .all(taskId) as ChildSummary[];
-  return { task, children };
+  const { intervals, totalActiveMs } = taskIntervals(db, taskId);
+  return { task, children, intervals, totalActiveMs };
 }
 
 // --------------------------------------------------------------------------
@@ -359,7 +368,10 @@ function findCyclePath(db: Db, taskId: number, newParentId: number): number[] | 
   return undefined;
 }
 
-function requireTaskRow(db: Db, id: number, what: 'task' | 'parent' = 'task'): TaskRow {
+// requireTaskId / requireTaskRow / assembleTask are shared with the status
+// machine (src/lifecycle.ts) — the same core layer, split into its own module.
+
+export function requireTaskRow(db: Db, id: number, what: 'task' | 'parent' = 'task'): TaskRow {
   const row = db.prepare(`SELECT ${TASK_COLUMNS} FROM tasks WHERE id = ?`).get(id) as TaskRow | undefined;
   if (row === undefined) {
     throw new TaskError('not-found', what === 'parent' ? `unknown parent task id: ${id}` : `unknown task id: ${id}`);
@@ -367,7 +379,7 @@ function requireTaskRow(db: Db, id: number, what: 'task' | 'parent' = 'task'): T
   return row;
 }
 
-function assembleTask(db: Db, id: number): TaskView | undefined {
+export function assembleTask(db: Db, id: number): TaskView | undefined {
   const row = db.prepare(`SELECT ${TASK_COLUMNS} FROM tasks WHERE id = ?`).get(id) as TaskRow | undefined;
   if (row === undefined) {
     return undefined;
@@ -415,7 +427,7 @@ function asBody(input: unknown): Record<string, unknown> {
   return (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>;
 }
 
-function requireTaskId(raw: unknown): number {
+export function requireTaskId(raw: unknown): number {
   if (typeof raw === 'number' && Number.isInteger(raw)) {
     return raw;
   }

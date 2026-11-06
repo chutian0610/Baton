@@ -81,6 +81,27 @@ export const MIGRATIONS: readonly Migration[] = [
       `);
     },
   },
+  {
+    version: 4,
+    name: 'intervals',
+    up: (db) => {
+      // A recorded span of a task being active (glossary: Interval). Opened by
+      // entering `active`, closed by leaving it or entering done/dropped
+      // (ADR-0003: Intervals are the one piece of lifecycle data that IS
+      // stored). The partial unique index enforces "at most one open Interval
+      // per task" at the storage layer, below the status machine.
+      db.exec(`
+        CREATE TABLE intervals (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+          started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+          ended_at TEXT
+        );
+        CREATE UNIQUE INDEX idx_intervals_one_open_per_task ON intervals(task_id) WHERE ended_at IS NULL;
+        CREATE INDEX idx_intervals_task ON intervals(task_id, started_at);
+      `);
+    },
+  },
 ];
 
 /** Opens (creating if needed) `<dataDir>/data.db` and brings its schema to the latest version. */

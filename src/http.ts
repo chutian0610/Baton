@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { buildMcpServer } from './mcp.js';
+import { transitionTaskStatus } from './lifecycle.js';
 import { createProject, listProjects, ProjectError, resolveCurrentProject } from './projects.js';
 import { createTask, getTask, TaskError, updateTask } from './tasks.js';
 import type { Db } from './db.js';
@@ -11,14 +12,16 @@ import type { Db } from './db.js';
  * Plain node:http routing (ADR-0001; no framework — the SDK transport takes
  * Node req/res natively and the routes are few):
  *
- *   GET  /healthz           -> 200 {"status":"ok"}
- *   POST /projects          -> 201 project (name + bound paths)
- *   GET  /projects          -> 200 all projects with paths + open-task counts
- *   GET  /projects/current  -> 200 resolve ?cwd= to the Current Project
- *   POST /tasks             -> 201 task (project explicit or resolved from cwd)
- *   GET  /tasks/:id         -> 200 task + children summary
- *   PATCH /tasks/:id        -> 200 updated task (fields/reparent; no status)
- *   *    /mcp               -> MCP streamable HTTP transport (stateful sessions)
+ *   GET  /healthz            -> 200 {"status":"ok"}
+ *   POST /projects           -> 201 project (name + bound paths)
+ *   GET  /projects           -> 200 all projects with paths + open-task counts
+ *   GET  /projects/current   -> 200 resolve ?cwd= to the Current Project
+ *   POST /tasks              -> 201 task (project explicit or resolved from cwd)
+ *   GET  /tasks/:id          -> 200 task + children + intervals + total active time
+ *   PATCH /tasks/:id         -> 200 updated task (fields/reparent; status via the machine)
+ *   POST /tasks/:id/start    -> 200 task (start verb: pending|waiting -> active)
+ *   POST /tasks/:id/done     -> 200 task (done verb: any non-done -> done)
+ *   *    /mcp                -> MCP streamable HTTP transport (stateful sessions)
  *
  * Stateful session handling follows the SDK's canonical wiring: one
  * StreamableHTTPServerTransport (plus a fresh McpServer) per initialize; the
@@ -244,12 +247,34 @@ async function handleTasksRoute(
     return;
   }
 
-  const id = path.slice('/tasks/'.length);
-  if (id === '' || id.includes('/')) {
+  const rest = path.slice('/tasks/'.length);
+
+  // Verb endpoints (spec: start/done get verb-shaped calls; they map onto the
+  // same status machine as PATCH {status}, so successes and errors are
+  // identical for the same task and situation).
+  const segments = rest.split('/');
+  if (segments.length === 2 && (segments[1] === 'start' || segments[1] === 'done')) {
+    if (req.method !== 'POST') {
+      res.writeHead(405, { allow: 'POST', ...JSON_HEADERS });
+      res.end(JSON.stringify({ error: 'method not allowed' }));
+      return;
+    }
+    try {
+      const task = transitionTaskStatus(db, segments[0], segments[1] === 'start' ? 'active' : 'done');
+      res.writeHead(200, JSON_HEADERS);
+      res.end(JSON.stringify({ task }));
+    } catch (err) {
+      sendTaskError(res, err);
+    }
+    return;
+  }
+
+  if (rest === '' || rest.includes('/')) {
     res.writeHead(404, JSON_HEADERS);
     res.end(JSON.stringify({ error: 'not found' }));
     return;
   }
+  const id = rest;
 
   if (req.method === 'GET') {
     try {
