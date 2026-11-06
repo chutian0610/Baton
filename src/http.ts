@@ -3,14 +3,18 @@ import { randomUUID } from 'node:crypto';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { buildMcpServer } from './mcp.js';
+import { createProject, listProjects, ProjectError, resolveCurrentProject } from './projects.js';
 import type { Db } from './db.js';
 
 /**
  * Plain node:http routing (ADR-0001; no framework — the SDK transport takes
- * Node req/res natively and we only have two routes):
+ * Node req/res natively and the routes are few):
  *
- *   GET  /healthz  -> 200 {"status":"ok"}
- *   *    /mcp      -> MCP streamable HTTP transport (stateful sessions)
+ *   GET  /healthz           -> 200 {"status":"ok"}
+ *   POST /projects          -> 201 project (name + bound paths)
+ *   GET  /projects          -> 200 all projects with paths + open-task counts
+ *   GET  /projects/current  -> 200 resolve ?cwd= to the Current Project
+ *   *    /mcp               -> MCP streamable HTTP transport (stateful sessions)
  *
  * Stateful session handling follows the SDK's canonical wiring: one
  * StreamableHTTPServerTransport (plus a fresh McpServer) per initialize; the
@@ -58,6 +62,11 @@ async function handleRequest(
     }
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok' }));
+    return;
+  }
+
+  if (path === '/projects' || path === '/projects/current') {
+    await handleProjectsRoute(req, res, db, path);
     return;
   }
 
@@ -126,4 +135,67 @@ function readJsonBody(req: IncomingMessage): Promise<unknown> {
     });
     req.on('error', reject);
   });
+}
+
+const JSON_HEADERS = { 'content-type': 'application/json' };
+
+async function handleProjectsRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  db: Db,
+  path: string,
+): Promise<void> {
+  if (path === '/projects') {
+    if (req.method === 'POST') {
+      let body: unknown;
+      try {
+        body = await readJsonBody(req);
+      } catch {
+        res.writeHead(400, JSON_HEADERS);
+        res.end(JSON.stringify({ error: 'invalid JSON body' }));
+        return;
+      }
+      try {
+        const project = createProject(db, body);
+        res.writeHead(201, JSON_HEADERS);
+        res.end(JSON.stringify({ project }));
+      } catch (err) {
+        sendProjectError(res, err);
+      }
+      return;
+    }
+    if (req.method === 'GET') {
+      res.writeHead(200, JSON_HEADERS);
+      res.end(JSON.stringify({ projects: listProjects(db) }));
+      return;
+    }
+    res.writeHead(405, { allow: 'GET, POST', ...JSON_HEADERS });
+    res.end(JSON.stringify({ error: 'method not allowed' }));
+    return;
+  }
+
+  // path === '/projects/current': resolve ?cwd=... to the Current Project.
+  if (req.method !== 'GET') {
+    res.writeHead(405, { allow: 'GET', ...JSON_HEADERS });
+    res.end(JSON.stringify({ error: 'method not allowed' }));
+    return;
+  }
+  const cwd = new URL(req.url ?? '/', 'http://localhost').searchParams.get('cwd');
+  try {
+    const current = resolveCurrentProject(db, cwd);
+    res.writeHead(200, JSON_HEADERS);
+    res.end(JSON.stringify(current));
+  } catch (err) {
+    sendProjectError(res, err);
+  }
+}
+
+/** Maps a ProjectError onto an HTTP status + `{"error": message}` body; rethrows anything else. */
+function sendProjectError(res: ServerResponse, err: unknown): void {
+  if (!(err instanceof ProjectError)) {
+    throw err; // unexpected — let the top-level 500 handler deal with it
+  }
+  const status = err.code === 'duplicate' ? 409 : err.code === 'unbound' ? 404 : 400;
+  res.writeHead(status, JSON_HEADERS);
+  res.end(JSON.stringify({ error: err.message }));
 }

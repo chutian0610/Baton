@@ -26,6 +26,27 @@ export const MIGRATIONS: readonly Migration[] = [
       db.exec('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
     },
   },
+  {
+    version: 2,
+    name: 'projects',
+    up: (db) => {
+      // Paths are stored in canonical form (absolute, no trailing slash) and
+      // are unique across projects: the PRIMARY KEY enforces "a path binds to
+      // at most one project" (spec: Current Project resolution).
+      db.exec(`
+        CREATE TABLE projects (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );
+        CREATE TABLE project_paths (
+          path TEXT PRIMARY KEY,
+          project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_project_paths_project ON project_paths(project_id);
+      `);
+    },
+  },
 ];
 
 /** Opens (creating if needed) `<dataDir>/data.db` and brings its schema to the latest version. */
