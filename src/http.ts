@@ -4,6 +4,7 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { buildMcpServer } from './mcp.js';
 import { createProject, listProjects, ProjectError, resolveCurrentProject } from './projects.js';
+import { createTask, getTask, TaskError, updateTask } from './tasks.js';
 import type { Db } from './db.js';
 
 /**
@@ -14,6 +15,9 @@ import type { Db } from './db.js';
  *   POST /projects          -> 201 project (name + bound paths)
  *   GET  /projects          -> 200 all projects with paths + open-task counts
  *   GET  /projects/current  -> 200 resolve ?cwd= to the Current Project
+ *   POST /tasks             -> 201 task (project explicit or resolved from cwd)
+ *   GET  /tasks/:id         -> 200 task + children summary
+ *   PATCH /tasks/:id        -> 200 updated task (fields/reparent; no status)
  *   *    /mcp               -> MCP streamable HTTP transport (stateful sessions)
  *
  * Stateful session handling follows the SDK's canonical wiring: one
@@ -67,6 +71,11 @@ async function handleRequest(
 
   if (path === '/projects' || path === '/projects/current') {
     await handleProjectsRoute(req, res, db, path);
+    return;
+  }
+
+  if (path === '/tasks' || path.startsWith('/tasks/')) {
+    await handleTasksRoute(req, res, db, path);
     return;
   }
 
@@ -196,6 +205,91 @@ function sendProjectError(res: ServerResponse, err: unknown): void {
     throw err; // unexpected — let the top-level 500 handler deal with it
   }
   const status = err.code === 'duplicate' ? 409 : err.code === 'unbound' ? 404 : 400;
+  res.writeHead(status, JSON_HEADERS);
+  res.end(JSON.stringify({ error: err.message }));
+}
+
+/**
+ * Task routes. Same conventions as the projects routes: 201 on create, 200 on
+ * read/update, and TaskError codes map to `invalid` -> 400,
+ * `not-found`/`unbound` -> 404, `conflict`/`unsupported` -> 409.
+ */
+async function handleTasksRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  db: Db,
+  path: string,
+): Promise<void> {
+  if (path === '/tasks') {
+    if (req.method === 'POST') {
+      let body: unknown;
+      try {
+        body = await readJsonBody(req);
+      } catch {
+        res.writeHead(400, JSON_HEADERS);
+        res.end(JSON.stringify({ error: 'invalid JSON body' }));
+        return;
+      }
+      try {
+        const task = createTask(db, body);
+        res.writeHead(201, JSON_HEADERS);
+        res.end(JSON.stringify({ task }));
+      } catch (err) {
+        sendTaskError(res, err);
+      }
+      return;
+    }
+    res.writeHead(405, { allow: 'POST', ...JSON_HEADERS });
+    res.end(JSON.stringify({ error: 'method not allowed' }));
+    return;
+  }
+
+  const id = path.slice('/tasks/'.length);
+  if (id === '' || id.includes('/')) {
+    res.writeHead(404, JSON_HEADERS);
+    res.end(JSON.stringify({ error: 'not found' }));
+    return;
+  }
+
+  if (req.method === 'GET') {
+    try {
+      const detail = getTask(db, id);
+      res.writeHead(200, JSON_HEADERS);
+      res.end(JSON.stringify(detail));
+    } catch (err) {
+      sendTaskError(res, err);
+    }
+    return;
+  }
+  if (req.method === 'PATCH') {
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch {
+      res.writeHead(400, JSON_HEADERS);
+      res.end(JSON.stringify({ error: 'invalid JSON body' }));
+      return;
+    }
+    try {
+      const task = updateTask(db, id, body);
+      res.writeHead(200, JSON_HEADERS);
+      res.end(JSON.stringify({ task }));
+    } catch (err) {
+      sendTaskError(res, err);
+    }
+    return;
+  }
+  res.writeHead(405, { allow: 'GET, PATCH', ...JSON_HEADERS });
+  res.end(JSON.stringify({ error: 'method not allowed' }));
+}
+
+/** Maps a TaskError onto an HTTP status + `{"error": message}` body; rethrows anything else. */
+function sendTaskError(res: ServerResponse, err: unknown): void {
+  if (!(err instanceof TaskError)) {
+    throw err; // unexpected — let the top-level 500 handler deal with it
+  }
+  const status =
+    err.code === 'invalid' ? 400 : err.code === 'not-found' || err.code === 'unbound' ? 404 : 409;
   res.writeHead(status, JSON_HEADERS);
   res.end(JSON.stringify({ error: err.message }));
 }

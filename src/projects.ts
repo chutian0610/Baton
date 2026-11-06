@@ -30,7 +30,7 @@ export interface ProjectView {
   createdAt: string;
   /** Bound paths in canonical form, sorted for stable output. */
   paths: string[];
-  /** Open (not done/dropped) task count; zero until the tasks table lands. */
+  /** Open (not done/dropped) task count. */
   openTaskCount: number;
 }
 
@@ -181,16 +181,16 @@ function assembleProject(db: Db, row: ProjectRow): ProjectView {
     name: row.name,
     createdAt: row.created_at,
     paths: pathRows.map((pathRow) => pathRow.path),
-    // The open-task count joins the tasks table once it exists (tasks
-    // ticket); projects ship first, so the count starts at zero.
-    openTaskCount: countOpenTasks(row.id),
+    openTaskCount: countOpenTasks(db, row.id),
   };
 }
 
-function countOpenTasks(_projectId: number): number {
-  // Placeholder for the tasks ticket: SELECT COUNT(*) FROM tasks WHERE
-  // project_id = ? AND status NOT IN ('done', 'dropped').
-  return 0;
+/** Open tasks: everything not done/dropped (spec: default views exclude closed work). */
+function countOpenTasks(db: Db, projectId: number): number {
+  const row = db
+    .prepare("SELECT COUNT(*) AS n FROM tasks WHERE project_id = ? AND status NOT IN ('done', 'dropped')")
+    .get(projectId) as { n: number };
+  return row.n;
 }
 
 /** Canonical bound-path form: trimmed, no trailing slash ("/" stays "/"). */

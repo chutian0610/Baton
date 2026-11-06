@@ -6,8 +6,9 @@ import { startDaemon, type DaemonHandle } from './helpers/daemon.js';
 
 /**
  * MCP surface tests: the official client SDK against /mcp on the real daemon.
- * The project tools must behave identically to the HTTP API — same JSON
- * payloads on success, same message text on errors (surfaced as tool errors).
+ * The project and task tools must behave identically to the HTTP API — same
+ * JSON payloads on success, same message text on errors (surfaced as tool
+ * errors).
  */
 let daemon: DaemonHandle;
 
@@ -36,11 +37,18 @@ function jsonOf(result: CallToolResult): unknown {
   return JSON.parse(textOf(result));
 }
 
-test('official MCP client initializes at /mcp and sees the project tools', async () => {
+test('official MCP client initializes at /mcp and sees the project and task tools', async () => {
   const client = await connectClient();
   try {
     const { tools } = await client.listTools();
-    expect(tools.map((tool) => tool.name).sort()).toEqual(['project_create', 'project_current', 'project_list']);
+    expect(tools.map((tool) => tool.name).sort()).toEqual([
+      'project_create',
+      'project_current',
+      'project_list',
+      'task_create',
+      'task_get',
+      'task_update',
+    ]);
   } finally {
     await client.close();
   }
@@ -162,6 +170,194 @@ test('duplicate name and duplicate path surface as tool errors with the same mes
     expect(((await response.json()) as { error: string }).error).toContain(
       'path already bound to project mcp-dupe: /workspace/mcp-owned',
     );
+  } finally {
+    await client.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Task tools — must mirror the HTTP API: same JSON payloads on success, same
+// message text on errors (surfaced as tool errors).
+// ---------------------------------------------------------------------------
+
+async function mcpCreateTask(client: Client, body: Record<string, unknown>): Promise<Record<string, any>> {
+  const result = await client.callTool({ name: 'task_create', arguments: body });
+  expect(result.isError).toBeFalsy();
+  return jsonOf(result) as Record<string, any>;
+}
+
+test('task_create with an explicit project mirrors the HTTP API, normalizing tags', async () => {
+  const client = await connectClient();
+  try {
+    await client.callTool({
+      name: 'project_create',
+      arguments: { name: 'mcp-tasks', paths: ['/workspace/mcp-tasks'] },
+    });
+
+    const created = await mcpCreateTask(client, {
+      title: 'MCP task',
+      project: 'mcp-tasks',
+      tags: ['Agent', 'agent', ' Ops '],
+      priority: 'M',
+      due: '2026-12-31T00:00:00Z',
+      effort: '1h',
+      hidden_until: '2026-12-01T00:00:00Z',
+    });
+
+    expect(created.task).toMatchObject({
+      id: expect.any(Number),
+      title: 'MCP task',
+      status: 'pending',
+      projectName: 'mcp-tasks',
+      parentId: null,
+      tags: ['agent', 'ops'],
+      priority: 'M',
+      due: '2026-12-31T00:00:00Z',
+      effort: '1h',
+      hiddenUntil: '2026-12-01T00:00:00Z',
+    });
+
+    // Same story over HTTP: the created task is readable at its id.
+    const response = await fetch(`${daemon.baseUrl}/tasks/${created.task.id}`);
+    expect(response.status).toBe(200);
+    const detail = (await response.json()) as { task: { title: string; tags: string[] } };
+    expect(detail.task.title).toBe('MCP task');
+    expect(detail.task.tags).toEqual(['agent', 'ops']);
+  } finally {
+    await client.close();
+  }
+});
+
+test('task_create resolves the project from cwd', async () => {
+  const client = await connectClient();
+  try {
+    await client.callTool({
+      name: 'project_create',
+      arguments: { name: 'mcp-cwd', paths: ['/workspace/mcp-cwd/nested'] },
+    });
+
+    const task = await mcpCreateTask(client, { title: 'From cwd', cwd: '/workspace/mcp-cwd/nested/deep/file.ts' });
+    expect(task.task.projectName).toBe('mcp-cwd');
+  } finally {
+    await client.close();
+  }
+});
+
+test('task_create without project or cwd returns the same message as the HTTP API', async () => {
+  const client = await connectClient();
+  try {
+    const result = await client.callTool({ name: 'task_create', arguments: { title: 'No scope' } });
+    expect(result.isError).toBe(true);
+    const message = textOf(result);
+    expect(message).toContain('project_create'); // the fix is named
+
+    // Identical message text over HTTP for the same situation.
+    const response = await fetch(`${daemon.baseUrl}/tasks`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'No scope either' }),
+    });
+    expect(response.status).toBe(404);
+    expect(((await response.json()) as { error: string }).error).toBe(message);
+  } finally {
+    await client.close();
+  }
+});
+
+test('task_get returns the task plus a children summary', async () => {
+  const client = await connectClient();
+  try {
+    const parent = await mcpCreateTask(client, { title: 'MCP parent', project: 'mcp-tasks' });
+    const child = await mcpCreateTask(client, { title: 'MCP child', project: 'mcp-tasks', parent: parent.task.id });
+
+    const detail = (await client.callTool({
+      name: 'task_get',
+      arguments: { id: parent.task.id },
+    })) as CallToolResult;
+    expect(detail.isError).toBeFalsy();
+
+    const payload = jsonOf(detail) as { task: { id: number; parentId: number | null }; children: { id: number; title: string; status: string }[] };
+    expect(payload.task.id).toBe(parent.task.id);
+    expect(payload.children).toEqual([{ id: child.task.id, title: 'MCP child', status: 'pending' }]);
+  } finally {
+    await client.close();
+  }
+});
+
+test('task_update reparents and replaces tags', async () => {
+  const client = await connectClient();
+  try {
+    const root = await mcpCreateTask(client, { title: 'New root', project: 'mcp-tasks' });
+    const moving = await mcpCreateTask(client, { title: 'Moving task', project: 'mcp-tasks' });
+
+    const updated = await client.callTool({
+      name: 'task_update',
+      arguments: { id: moving.task.id, parent: root.task.id, tags: ['Fresh', 'fresh'], title: 'Moved task' },
+    });
+    expect(updated.isError).toBeFalsy();
+    expect(jsonOf(updated)).toMatchObject({
+      task: { parentId: root.task.id, title: 'Moved task', tags: ['fresh'] },
+    });
+  } finally {
+    await client.close();
+  }
+});
+
+test('task_update rejects an ancestor cycle with the cycle path in the message', async () => {
+  const client = await connectClient();
+  try {
+    const top = await mcpCreateTask(client, { title: 'Cycle top', project: 'mcp-tasks' });
+    const middle = await mcpCreateTask(client, { title: 'Cycle middle', project: 'mcp-tasks', parent: top.task.id });
+    const bottom = await mcpCreateTask(client, { title: 'Cycle bottom', project: 'mcp-tasks', parent: middle.task.id });
+
+    const result = await client.callTool({
+      name: 'task_update',
+      arguments: { id: top.task.id, parent: bottom.task.id },
+    });
+    expect(result.isError).toBe(true);
+    const message = textOf(result);
+    expect(message).toContain('cycle');
+    expect(message).toContain(`${top.task.id} -> ${bottom.task.id} -> ${middle.task.id} -> ${top.task.id}`);
+  } finally {
+    await client.close();
+  }
+});
+
+test('task_update rejects status changes, project moves, and deps', async () => {
+  const client = await connectClient();
+  try {
+    const task = await mcpCreateTask(client, { title: 'Restricted', project: 'mcp-tasks' });
+
+    for (const arguments_ of [
+      { id: task.task.id, status: 'active' },
+      { id: task.task.id, project: 'mcp-cwd' },
+      { id: task.task.id, deps: [task.task.id + 100] },
+    ]) {
+      const result = await client.callTool({ name: 'task_update', arguments: arguments_ });
+      expect(result.isError).toBe(true);
+    }
+
+    const atCreate = await client.callTool({
+      name: 'task_create',
+      arguments: { title: 'No status at create', project: 'mcp-tasks', status: 'pending' },
+    });
+    expect(atCreate.isError).toBe(true);
+    expect(textOf(atCreate)).toContain('status');
+  } finally {
+    await client.close();
+  }
+});
+
+test('task tools report unknown ids as tool errors', async () => {
+  const client = await connectClient();
+  try {
+    const got = await client.callTool({ name: 'task_get', arguments: { id: 999999 } });
+    expect(got.isError).toBe(true);
+    expect(textOf(got)).toContain('unknown task id');
+
+    const updated = await client.callTool({ name: 'task_update', arguments: { id: 999999, title: 'Nope' } });
+    expect(updated.isError).toBe(true);
+    expect(textOf(updated)).toContain('unknown task id');
   } finally {
     await client.close();
   }
