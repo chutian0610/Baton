@@ -10,6 +10,7 @@ import {
   resolveCurrentProject,
 } from './projects.js';
 import { createTask, getTask, TaskError, updateTask } from './tasks.js';
+import { FILTER_FIELD_KEYS, listTags, queryTasks } from './query.js';
 import { transitionTaskStatus } from './lifecycle.js';
 import type { Db } from './db.js';
 
@@ -144,6 +145,67 @@ export function buildMcpServer(db: Db): McpServer {
   );
 
   mcp.registerTool(
+    'task_list',
+    {
+      title: 'List tasks',
+      description:
+        'List tasks through the query model: a quick view (view: "current" | "today" | "blocked" | "all") ' +
+        'OR a structured filter (the filter fields below, combined with AND), plus an optional cwd. ' +
+        'current = open tasks of the cwd-resolved Current Project; today = open tasks due today or overdue; ' +
+        'blocked = open and blocked; all = everything with no default exclusions. ' +
+        'Every view and filter except "all" (and any filter naming statuses) excludes done, dropped, and ' +
+        'tasks whose hidden_until is still in the future; naming statuses explicitly (e.g. status: "done") ' +
+        'returns exactly those. Default ordering: due ascending (no due last) -> priority descending ' +
+        '(H > M > L, none last) -> id ascending; sort and limit override (sort entries are field names or ' +
+        '{field, direction} with direction "asc"|"desc"). ' +
+        'Scope: an explicit project wins; otherwise a resolvable cwd scopes the query to that project; ' +
+        'an absent or unbound cwd lists the whole store with a note in scope.note. ' +
+        'The response is {tasks: [task views], scope: {project: {id, name} | null, note?}} — ' +
+        'identical to GET /tasks on the HTTP API.',
+      inputSchema: {
+        view: z.string().optional().describe('quick view: "current", "today", "blocked", or "all"'),
+        cwd: z.string().optional().describe("caller's working directory; scopes the query to the Current Project it resolves to"),
+        status: z.union([z.string(), z.array(z.string())]).optional().describe('status or array of statuses ("pending", "active", "waiting", "done", "dropped")'),
+        project: z.union([z.string(), z.number()]).optional().describe('project name or id; wins over cwd'),
+        tags: z.array(z.string()).optional().describe('tags the tasks must carry (lowercased before matching)'),
+        tagMode: z.string().optional().describe('"any" (default: at least one tag matches) or "all" (every tag must be carried)'),
+        parent: z.number().optional().describe('task id; only this parent\'s direct children match'),
+        hasParent: z.boolean().optional().describe('false lists root tasks only; true lists non-roots'),
+        blocked: z.boolean().optional().describe('filter on the derived blocked flag (some dependency is neither done nor dropped)'),
+        dueBefore: z.string().optional().describe('ISO-8601 date or datetime; inclusive; tasks without a due date never match'),
+        dueAfter: z.string().optional().describe('ISO-8601 date or datetime; inclusive; tasks without a due date never match'),
+        priority: z.union([z.string(), z.array(z.string())]).optional().describe('priority or array: "H", "M", "L"'),
+        text: z.string().optional().describe('case-insensitive title substring'),
+        sort: z
+          .union([
+            z.string(),
+            z.array(z.union([z.string(), z.object({ field: z.string(), direction: z.string().optional() })])),
+          ])
+          .optional()
+          .describe('field name, {field, direction}, or an array of them; fields: due, priority, id, title, status, createdAt, updatedAt'),
+        limit: z.number().optional().describe('return at most this many tasks (after sorting)'),
+      },
+    },
+    async (args) =>
+      runTool(() => {
+        // Thin adapter: the flat tool arguments become the core's
+        // {view, filter, cwd} input — only the filter fields actually present.
+        const { view, cwd, ...rest } = args as Record<string, unknown>;
+        const filter: Record<string, unknown> = {};
+        for (const key of FILTER_FIELD_KEYS) {
+          if (rest[key] !== undefined) {
+            filter[key] = rest[key];
+          }
+        }
+        return queryTasks(db, {
+          ...(view !== undefined ? { view } : {}),
+          ...(cwd !== undefined ? { cwd } : {}),
+          ...(Object.keys(filter).length > 0 ? { filter } : {}),
+        });
+      }),
+  );
+
+  mcp.registerTool(
     'task_update',
     {
       title: 'Update task',
@@ -237,6 +299,18 @@ export function buildMcpServer(db: Db): McpServer {
       },
     },
     async ({ id }, extra) => runTool(() => ({ task: transitionTaskStatus(db, id, 'done', mcpActor(extra.sessionId)) })),
+  );
+
+  mcp.registerTool(
+    'tag_list',
+    {
+      title: 'List tags',
+      description:
+        'Every tag in use across the store with the count of open (non-done/dropped) tasks carrying it — ' +
+        'the vocabulary for tag filters, so they do not misspell into oblivion. Tags on only closed tasks ' +
+        'do not appear. Response: {tags: [{tag, count}]}, sorted by tag.',
+    },
+    async () => runTool(() => listTags(db)),
   );
 
   return mcp;

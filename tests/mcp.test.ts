@@ -45,10 +45,12 @@ test('official MCP client initializes at /mcp and sees the project and task tool
       'project_create',
       'project_current',
       'project_list',
+      'tag_list',
       'task_annotate',
       'task_create',
       'task_done',
       'task_get',
+      'task_list',
       'task_start',
       'task_update',
     ]);

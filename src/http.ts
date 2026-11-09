@@ -7,6 +7,7 @@ import { HTTP_ACTOR } from './actors.js';
 import { appendAnnotation } from './annotations.js';
 import { transitionTaskStatus } from './lifecycle.js';
 import { createProject, listProjects, ProjectError, resolveCurrentProject } from './projects.js';
+import { queryTasks } from './query.js';
 import { createTask, getTask, TaskError, updateTask } from './tasks.js';
 import type { Db } from './db.js';
 
@@ -19,6 +20,8 @@ import type { Db } from './db.js';
  *   GET  /projects                -> 200 all projects with paths + open-task counts
  *   GET  /projects/current        -> 200 resolve ?cwd= to the Current Project
  *   POST /tasks                   -> 201 task (project explicit or resolved from cwd)
+ *   GET  /tasks                   -> 200 {tasks, scope} (query: ?view= quick view or
+ *                                    ?filter= URL-encoded JSON filter, plus optional ?cwd=)
  *   GET  /tasks/:id               -> 200 task + children + intervals + annotations + recent changes
  *   PATCH /tasks/:id              -> 200 updated task (fields/reparent; status via the machine)
  *   POST /tasks/:id/start         -> 200 task (start verb: pending|waiting -> active)
@@ -158,6 +161,11 @@ function readJsonBody(req: IncomingMessage): Promise<unknown> {
 
 const JSON_HEADERS = { 'content-type': 'application/json' };
 
+/** Treat a missing or empty query param as absent (?view= is the same as no view). */
+function nonEmptyParam(value: string | null): string | undefined {
+  return value === null || value === '' ? undefined : value;
+}
+
 async function handleProjectsRoute(
   req: IncomingMessage,
   res: ServerResponse,
@@ -249,7 +257,37 @@ async function handleTasksRoute(
       }
       return;
     }
-    res.writeHead(405, { allow: 'POST', ...JSON_HEADERS });
+    if (req.method === 'GET') {
+      // The query model (src/query.ts): a quick view or a JSON filter, plus an
+      // optional cwd — the same core read the MCP task_list tool uses.
+      const params = new URL(req.url ?? '/', 'http://localhost').searchParams;
+      const view = nonEmptyParam(params.get('view'));
+      const cwd = nonEmptyParam(params.get('cwd'));
+      const filterRaw = params.get('filter');
+      let filter: unknown;
+      if (filterRaw !== null) {
+        try {
+          filter = JSON.parse(filterRaw);
+        } catch {
+          res.writeHead(400, JSON_HEADERS);
+          res.end(JSON.stringify({ error: `filter must be a URL-encoded JSON object, got: ${filterRaw}` }));
+          return;
+        }
+      }
+      try {
+        const result = queryTasks(db, {
+          ...(view !== undefined ? { view } : {}),
+          ...(filter !== undefined ? { filter } : {}),
+          ...(cwd !== undefined ? { cwd } : {}),
+        });
+        res.writeHead(200, JSON_HEADERS);
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        sendTaskError(res, err);
+      }
+      return;
+    }
+    res.writeHead(405, { allow: 'GET, POST', ...JSON_HEADERS });
     res.end(JSON.stringify({ error: 'method not allowed' }));
     return;
   }

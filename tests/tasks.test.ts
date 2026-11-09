@@ -396,7 +396,9 @@ test('malformed JSON body answers 400 on POST and PATCH', async () => {
 });
 
 test('unsupported methods answer 405', async () => {
-  const onCollection = await fetch(`${daemon.baseUrl}/tasks`);
+  // GET /tasks is the query model (tests/query.test.ts); DELETE on the
+  // collection stays unsupported.
+  const onCollection = await fetch(`${daemon.baseUrl}/tasks`, { method: 'DELETE' });
   expect(onCollection.status).toBe(405);
 
   const onTask = await fetch(`${daemon.baseUrl}/tasks/1`, { method: 'DELETE' });
