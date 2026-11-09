@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
- * Process-level test harness (the seam every later ticket reuses): boots the
+ * Process-level test harness (the seam every later change reuses): boots the
  * BUILT daemon (`node dist/index.js`) as a real subprocess on a random port
  * with a fresh temp data dir, waits for readiness, and tears everything down.
  *

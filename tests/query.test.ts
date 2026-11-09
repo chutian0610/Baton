@@ -516,7 +516,7 @@ test('input validation rejects malformed queries with 400 and a naming message',
 
 // ----------------------------------------------------------------- tag_list
 
-test('tag_list: counts open tasks per tag; tags on only closed tasks are absent', async () => {
+test('tag_list: counts tasks per tag across ALL statuses; closed-only tags still appear', async () => {
   const client = await connectClient();
   try {
     await makeProject('q-taglist');
@@ -531,10 +531,11 @@ test('tag_list: counts open tasks per tag; tags on only closed tasks are absent'
     expect(result.isError).toBeFalsy();
     const tags = (jsonOf(result) as { tags: { tag: string; count: number }[] }).tags;
 
-    const rust = tags.find((entry) => entry.tag === 'ql-rust');
-    expect(rust).toEqual({ tag: 'ql-rust', count: 2 }); // the done one does not count
+    // every task counts, whatever its status ("tags in use across the store")
+    expect(tags.find((entry) => entry.tag === 'ql-rust')).toEqual({ tag: 'ql-rust', count: 3 });
     expect(tags.find((entry) => entry.tag === 'ql-cli')).toEqual({ tag: 'ql-cli', count: 1 });
-    expect(tags.find((entry) => entry.tag === 'ql-gone')).toBeUndefined(); // only on a dropped task
+    // a tag carried only by a dropped task is still in use and must appear
+    expect(tags.find((entry) => entry.tag === 'ql-gone')).toEqual({ tag: 'ql-gone', count: 1 });
     const sorted = tags.map((entry) => entry.tag);
     expect([...sorted].sort()).toEqual(sorted); // stable, sorted by tag
   } finally {

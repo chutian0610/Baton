@@ -5,10 +5,12 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { buildMcpServer } from './mcp.js';
 import { HTTP_ACTOR } from './actors.js';
 import { appendAnnotation } from './annotations.js';
+import { listChanges } from './changelog.js';
+import { display } from './internal.js';
 import { transitionTaskStatus } from './lifecycle.js';
 import { createProject, listProjects, ProjectError, resolveCurrentProject } from './projects.js';
 import { queryTasks } from './query.js';
-import { createTask, getTask, TaskError, updateTask } from './tasks.js';
+import { createTask, getTask, requireTaskId, requireTaskRow, TaskError, updateTask } from './tasks.js';
 import type { Db } from './db.js';
 
 /**
@@ -28,6 +30,8 @@ import type { Db } from './db.js';
  *   POST /tasks/:id/done          -> 200 task (done verb: any non-done -> done)
  *   POST /tasks/:id/annotations   -> 201 annotation (append-only; no edit/delete route)
  *   GET  /tasks/:id/annotations   -> 200 annotations, newest first
+ *   GET  /tasks/:id/changes       -> 200 {changes, total}: the FULL change history,
+ *                                    newest first, paged (?limit= default 100, ?offset= 0)
  *   *    /mcp                     -> MCP streamable HTTP transport (stateful sessions)
  *
  * Direct HTTP calls record the constant Actor {kind: "http"} (src/actors.ts)
@@ -217,14 +221,34 @@ async function handleProjectsRoute(
   }
 }
 
+/**
+ * The one code -> HTTP status table for the domain errors: ProjectError and
+ * TaskError carry their own code vocabularies, but the statuses they map to
+ * are these and only these (`invalid` -> 400, `not-found`/`unbound` -> 404,
+ * `conflict`/`unsupported`/`duplicate` -> 409). Both error senders below are
+ * driven from this map so the two surfaces can never drift apart.
+ */
+const DOMAIN_ERROR_STATUS: Record<string, number> = {
+  invalid: 400,
+  unbound: 404,
+  'not-found': 404,
+  duplicate: 409,
+  conflict: 409,
+  unsupported: 409,
+};
+
+/** Writes the mapped status + `{"error": message}` body for a domain error code. */
+function sendDomainError(res: ServerResponse, code: string, message: string): void {
+  res.writeHead(DOMAIN_ERROR_STATUS[code] ?? 400, JSON_HEADERS);
+  res.end(JSON.stringify({ error: message }));
+}
+
 /** Maps a ProjectError onto an HTTP status + `{"error": message}` body; rethrows anything else. */
 function sendProjectError(res: ServerResponse, err: unknown): void {
   if (!(err instanceof ProjectError)) {
     throw err; // unexpected — let the top-level 500 handler deal with it
   }
-  const status = err.code === 'duplicate' ? 409 : err.code === 'unbound' ? 404 : 400;
-  res.writeHead(status, JSON_HEADERS);
-  res.end(JSON.stringify({ error: err.message }));
+  sendDomainError(res, err.code, err.message);
 }
 
 /**
@@ -303,6 +327,14 @@ async function handleTasksRoute(
     return;
   }
 
+  // Full change history (spec user story 32: audit "what agents did"): the
+  // whole change log for one task, newest first, paged — task_get's
+  // recentChanges stays the capped 20-row peek.
+  if (segments.length === 2 && segments[1] === 'changes') {
+    await handleChangesRoute(req, res, db, segments[0]);
+    return;
+  }
+
   // Verb endpoints (spec: start/done get verb-shaped calls; they map onto the
   // same status machine as PATCH {status}, so successes and errors are
   // identical for the same task and situation).
@@ -362,6 +394,48 @@ async function handleTasksRoute(
 }
 
 /**
+ * Change-history sub-resource of a task. GET pages through the task's full
+ * change log, newest first: ?limit= (default 100, minimum 1) and ?offset=
+ * (default 0, minimum 0); malformed paging values are 400s. Unknown tasks
+ * keep the exact task error text (404). The payload is {changes, total},
+ * with `total` counting every row across pages.
+ */
+async function handleChangesRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  db: Db,
+  id: string,
+): Promise<void> {
+  if (req.method !== 'GET') {
+    res.writeHead(405, { allow: 'GET', ...JSON_HEADERS });
+    res.end(JSON.stringify({ error: 'method not allowed' }));
+    return;
+  }
+  const params = new URL(req.url ?? '/', 'http://localhost').searchParams;
+  try {
+    const taskId = requireTaskId(id);
+    requireTaskRow(db, taskId);
+    const limit = pageParam(nonEmptyParam(params.get('limit')), 'limit', 100, 1);
+    const offset = pageParam(nonEmptyParam(params.get('offset')), 'offset', 0, 0);
+    res.writeHead(200, JSON_HEADERS);
+    res.end(JSON.stringify(listChanges(db, 'task', taskId, limit, offset)));
+  } catch (err) {
+    sendTaskError(res, err);
+  }
+}
+
+/** Parses a paging query param (?limit/?offset) into an integer >= min; absent/empty means the default. */
+function pageParam(raw: string | undefined, field: string, fallback: number, min: number): number {
+  if (raw === undefined) {
+    return fallback;
+  }
+  if (!/^\d+$/.test(raw) || Number(raw) < min) {
+    throw new TaskError('invalid', `${field} must be an integer >= ${min}, got: ${display(raw)}`);
+  }
+  return Number(raw);
+}
+
+/**
  * Annotation sub-resource of a task. Append-only by construction: POST
  * appends (carrying the constant HTTP actor), GET lists; every other method
  * is a 405 naming the allowed ones — no edit or delete route exists.
@@ -411,8 +485,5 @@ function sendTaskError(res: ServerResponse, err: unknown): void {
   if (!(err instanceof TaskError)) {
     throw err; // unexpected — let the top-level 500 handler deal with it
   }
-  const status =
-    err.code === 'invalid' ? 400 : err.code === 'not-found' || err.code === 'unbound' ? 404 : 409;
-  res.writeHead(status, JSON_HEADERS);
-  res.end(JSON.stringify({ error: err.message }));
+  sendDomainError(res, err.code, err.message);
 }

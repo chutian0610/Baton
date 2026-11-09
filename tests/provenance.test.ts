@@ -299,6 +299,82 @@ test('recentChanges lists the task\u2019s rows newest-first, capped at 20', asyn
   expect(viaHttp.recentChanges.some((change: any) => change.diff.title !== undefined)).toBe(false);
 });
 
+// ------------------------------------------- full change history (audit read)
+
+test('GET /tasks/:id/changes returns the full history newest-first with a total', async () => {
+  const task = await makeTask('Audit me');
+  for (let i = 1; i <= 3; i++) {
+    await httpJson(
+      fetch(`${daemon.baseUrl}/tasks/${task.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ effort: `${i}h` }),
+      }),
+    );
+  }
+
+  // default shape: every row (default limit 100 covers it), newest first,
+  // with `total` counting all rows for the task
+  const page = await httpJson(fetch(`${daemon.baseUrl}/tasks/${task.id}/changes`));
+  expect(page.total).toBe(4); // create + 3 updates
+  expect(page.changes).toHaveLength(4);
+  expect(page.changes.map((change: any) => change.diff.effort?.after)).toEqual([
+    '3h', '2h', '1h', null, // newest first; the create row last (effort absent before and after)
+  ]);
+  expect(page.changes.at(-1).diff.title).toEqual({ before: null, after: 'Audit me' });
+  // each row is a full change-log row with the http actor
+  expect(page.changes[0]).toMatchObject({
+    id: expect.any(Number),
+    entity: 'task',
+    entityId: task.id,
+    actor: { kind: 'http' },
+    createdAt: expect.any(String),
+  });
+});
+
+test('GET /tasks/:id/changes pages with limit and offset; bad paging values are 400s', async () => {
+  const task = await makeTask('Paged history');
+  for (let i = 1; i <= 5; i++) {
+    await httpJson(
+      fetch(`${daemon.baseUrl}/tasks/${task.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ effort: `${i}h` }),
+      }),
+    );
+  }
+
+  const first = await httpJson(fetch(`${daemon.baseUrl}/tasks/${task.id}/changes?limit=2`));
+  expect(first.total).toBe(6); // create + 5 updates, on every page
+  expect(first.changes.map((change: any) => change.diff.effort?.after)).toEqual(['5h', '4h']);
+
+  const second = await httpJson(fetch(`${daemon.baseUrl}/tasks/${task.id}/changes?limit=2&offset=2`));
+  expect(second.total).toBe(6);
+  expect(second.changes.map((change: any) => change.diff.effort?.after)).toEqual(['3h', '2h']);
+
+  // an offset past the end is an empty page, not an error
+  const tail = await httpJson(fetch(`${daemon.baseUrl}/tasks/${task.id}/changes?offset=6`));
+  expect(tail.changes).toEqual([]);
+  expect(tail.total).toBe(6);
+
+  const badLimit = await fetch(`${daemon.baseUrl}/tasks/${task.id}/changes?limit=0`);
+  expect(badLimit.status).toBe(400);
+  expect(((await badLimit.json()) as { error: string }).error).toContain('limit must be an integer >= 1');
+  const badOffset = await fetch(`${daemon.baseUrl}/tasks/${task.id}/changes?offset=-1`);
+  expect(badOffset.status).toBe(400);
+  expect(((await badOffset.json()) as { error: string }).error).toContain('offset must be an integer >= 0');
+});
+
+test('GET /tasks/:id/changes answers 404 for unknown tasks and 405 for non-GET', async () => {
+  const unknown = await fetch(`${daemon.baseUrl}/tasks/999999/changes`);
+  expect(unknown.status).toBe(404);
+  expect(((await unknown.json()) as { error: string }).error).toContain('unknown task id');
+
+  const task = await makeTask('Changes method police');
+  const onPost = await fetch(`${daemon.baseUrl}/tasks/${task.id}/changes`, { method: 'POST' });
+  expect(onPost.status).toBe(405);
+});
+
 test('an MCP-sourced mutation records the MCP client as the actor; ordering mixes surfaces correctly', async () => {
   const task = await makeTask('Touched from both surfaces'); // http actor
 

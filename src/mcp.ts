@@ -306,9 +306,9 @@ export function buildMcpServer(db: Db): McpServer {
     {
       title: 'List tags',
       description:
-        'Every tag in use across the store with the count of open (non-done/dropped) tasks carrying it — ' +
-        'the vocabulary for tag filters, so they do not misspell into oblivion. Tags on only closed tasks ' +
-        'do not appear. Response: {tags: [{tag, count}]}, sorted by tag.',
+        'Every tag in use across the store with the count of tasks carrying it (all statuses — a tag ' +
+        'carried only by done or dropped tasks still appears) — the vocabulary for tag filters, so they ' +
+        'do not misspell into oblivion. Response: {tags: [{tag, count}]}, sorted by tag.',
     },
     async () => runTool(() => listTags(db)),
   );

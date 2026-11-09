@@ -62,10 +62,9 @@ export function recordChange(
 /**
  * Records a status transition (`before` -> `after`) on the change log.
  *
- * Reserved for the task-lifecycle paths (the status machine): the lifecycle
+ * Wired into the task-lifecycle paths (the status machine): the lifecycle
  * change owns the mutation and calls this from inside its own transaction,
  * keeping "one mutation, one change-log row" true for transitions too.
- * Nothing wires it yet — the status transition paths land with that change.
  */
 export function recordStatusChange(
   db: Db,
@@ -87,12 +86,50 @@ export function recentChanges(db: Db, entity: ChangeEntity, entityId: number, li
   const rows = db
     .prepare('SELECT id, entity, entity_id, diff, actor, created_at FROM change_log WHERE entity = ? AND entity_id = ? ORDER BY id DESC LIMIT ?')
     .all(entity, entityId, limit) as ChangeLogRow[];
-  return rows.map((row) => ({
+  return rows.map(asChangeView);
+}
+
+/** A page of one entity's full change history (user story: audit "what agents did"). */
+export interface ChangeHistoryPage {
+  /** The requested page of change-log rows, newest first. */
+  changes: ChangeLogView[];
+  /** Total change-log rows for the entity (across all pages). */
+  total: number;
+}
+
+/**
+ * The FULL change history for one entity, paged: newest-first rows plus the
+ * total row count, so callers can page through everything (spec user story
+ * 32). GET /tasks/:id/changes wraps this (default limit 100, offset 0);
+ * `task_get`'s recentChanges stays the capped 20-row peek.
+ */
+export function listChanges(
+  db: Db,
+  entity: ChangeEntity,
+  entityId: number,
+  limit = 100,
+  offset = 0,
+): ChangeHistoryPage {
+  const total = (
+    db
+      .prepare('SELECT COUNT(*) AS n FROM change_log WHERE entity = ? AND entity_id = ?')
+      .get(entity, entityId) as { n: number }
+  ).n;
+  const rows = db
+    .prepare(
+      'SELECT id, entity, entity_id, diff, actor, created_at FROM change_log WHERE entity = ? AND entity_id = ? ORDER BY id DESC LIMIT ? OFFSET ?',
+    )
+    .all(entity, entityId, limit, offset) as ChangeLogRow[];
+  return { changes: rows.map(asChangeView), total };
+}
+
+function asChangeView(row: ChangeLogRow): ChangeLogView {
+  return {
     id: row.id,
     entity: row.entity,
     entityId: row.entity_id,
     diff: JSON.parse(row.diff) as FieldDiff,
     actor: JSON.parse(row.actor) as Actor,
     createdAt: row.created_at,
-  }));
+  };
 }

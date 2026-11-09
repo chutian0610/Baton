@@ -1,6 +1,7 @@
 import type { Actor } from './actors.js';
 import { recordChange } from './changelog.js';
 import type { Db } from './db.js';
+import { display } from './internal.js';
 
 /**
  * Core Project operations — the "HTTP core" of ADR-0001: the HTTP JSON API
@@ -252,8 +253,4 @@ function parsePaths(raw: unknown): string[] {
     canonical.push(path);
   }
   return canonical;
-}
-
-function display(value: unknown): string {
-  return JSON.stringify(value) ?? String(value);
 }
