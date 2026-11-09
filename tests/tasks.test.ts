@@ -81,7 +81,7 @@ test('create with an explicit project name echoes the full field set, normalizin
   expect(task).toMatchObject({
     id: expect.any(Number),
     title: 'Ship the release', // trimmed
-    status: 'pending', // fixed in this ticket
+    status: 'pending', // fixed at creation: new tasks always start pending
     projectId: project.id,
     projectName: 'alpha',
     parentId: null,

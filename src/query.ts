@@ -1,16 +1,25 @@
 import type { Db } from './db.js';
+import { asBody, display } from './internal.js';
 import { TASK_STATUSES, type TaskStatus } from './lifecycle.js';
 import { ProjectError, resolveCurrentProject } from './projects.js';
-import { assembleTask, TaskError, type TaskView } from './tasks.js';
+import {
+  assembleTask,
+  findProject,
+  parseDatetime,
+  parseProjectRef,
+  TaskError,
+  type TaskView,
+} from './tasks.js';
 
 /**
  * The Query model (spec "Query model"; CONTEXT.md: Current Project,
  * Hidden-until, Tag, Blocked): one core read shared verbatim by GET /tasks
  * and the MCP task_list tool — a structured JSON filter (fields combine with
  * AND semantics; no free-text filter algebra anywhere) or one of the four
- * quick views, plus an optional cwd. Result items reuse the TaskView shape,
- * so blocked and progress are derived per read right here (ADR-0003: derived
- * data is never stored — filtering and sorting on `blocked` derives it too).
+ * quick views, plus an optional cwd. Result items are tasks in the TaskView
+ * shape, so blocked and progress are derived per read right here (ADR-0003:
+ * derived data is never stored — filtering and sorting on `blocked` derives
+ * it too).
  *
  * Rules both surfaces share:
  * - Quick views: `current` (open tasks of the resolved Current Project),
@@ -69,7 +78,7 @@ export interface TaskQueryResult {
   scope: QueryScope;
 }
 
-/** tag_list's answer: every tag in use with the count of open tasks carrying it. */
+/** tag_list's answer: every tag in use with the count of tasks carrying it (all statuses). */
 export interface TagUsage {
   tag: string;
   count: number;
@@ -174,14 +183,18 @@ export function queryTasks(db: Db, input: unknown): TaskQueryResult {
   return { tasks: filter?.limit === undefined ? tasks : tasks.slice(0, filter.limit), scope };
 }
 
-/** tag_list: tags in use across the whole store, counted over open (non-done/dropped) tasks only. */
+/**
+ * tag_list: every tag carried by ANY task across the store (spec: "tags in
+ * use across the store" — a tag carried only by done/dropped tasks is still
+ * in use and must appear), with the count of tasks carrying it, all statuses
+ * included.
+ */
 export function listTags(db: Db): { tags: TagUsage[] } {
   const tags = db
     .prepare(
       `SELECT tt.tag AS tag, COUNT(*) AS count
          FROM task_tags tt
          JOIN tasks t ON t.id = tt.task_id
-        WHERE t.status NOT IN ('done', 'dropped')
         GROUP BY tt.tag
         ORDER BY tt.tag`,
     )
@@ -226,19 +239,9 @@ function resolveQueryScope(
   };
 }
 
-function findProject(db: Db, ref: string | number): { id: number; name: string } {
-  const row =
-    typeof ref === 'number'
-      ? db.prepare('SELECT id, name FROM projects WHERE id = ?').get(ref)
-      : db.prepare('SELECT id, name FROM projects WHERE name = ?').get(ref);
-  if (row === undefined) {
-    throw new TaskError(
-      'not-found',
-      typeof ref === 'number' ? `unknown project id: ${ref}` : `unknown project name: ${ref}`,
-    );
-  }
-  return row as { id: number; name: string };
-}
+// findProject / parseProjectRef / parseDatetime are imported from the task
+// layer (src/tasks.ts) — one shared name-or-id project lookup and one shared
+// ISO-8601 datetime parse, so filters and fields validate identically.
 
 function requireTaskExists(db: Db, id: number): void {
   if (db.prepare('SELECT id FROM tasks WHERE id = ?').get(id) === undefined) {
@@ -390,10 +393,6 @@ function endOfTodayMs(now: number): number {
 // Input parsing (uniform "invalid" messages shared by HTTP and MCP)
 // --------------------------------------------------------------------------
 
-function asBody(input: unknown): Record<string, unknown> {
-  return (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>;
-}
-
 function parseView(raw: unknown): QuickView | undefined {
   if (raw === undefined || raw === null) {
     return undefined;
@@ -435,8 +434,8 @@ function parseFilter(raw: unknown): TaskFilter {
   const parentId = parseParent(body.parent);
   const hasParent = parseBoolean(body.hasParent, 'hasParent');
   const blocked = parseBoolean(body.blocked, 'blocked');
-  const dueBefore = parseDatetime(body.dueBefore, 'dueBefore');
-  const dueAfter = parseDatetime(body.dueAfter, 'dueAfter');
+  const dueBefore = parseDatetime(body.dueBefore, 'dueBefore') ?? undefined;
+  const dueAfter = parseDatetime(body.dueAfter, 'dueAfter') ?? undefined;
   const priorities = parsePriorities(body.priority);
   const text = parseText(body.text);
   const sort = parseSort(body.sort);
@@ -484,19 +483,6 @@ function parseStatuses(raw: unknown): TaskStatus[] | undefined {
     }
   }
   return statuses;
-}
-
-function parseProjectRef(raw: unknown): string | number | undefined {
-  if (raw === undefined || raw === null) {
-    return undefined;
-  }
-  if (typeof raw === 'string' && raw.trim() !== '') {
-    return raw.trim();
-  }
-  if (typeof raw === 'number' && Number.isInteger(raw)) {
-    return raw;
-  }
-  throw new TaskError('invalid', `project must be a project name (string) or project id (integer), got: ${display(raw)}`);
 }
 
 function parseFilterTags(raw: unknown): string[] | undefined {
@@ -582,22 +568,6 @@ function parseText(raw: unknown): string | undefined {
   return raw.trim().toLowerCase();
 }
 
-/** Accepts date or datetime strings in ISO-8601 shape (same convention as Task fields). */
-function parseDatetime(raw: unknown, field: string): string | undefined {
-  if (raw === undefined || raw === null) {
-    return undefined;
-  }
-  if (
-    typeof raw !== 'string' ||
-    raw.trim() === '' ||
-    !/^\d{4}-\d{2}-\d{2}([T ].*)?$/.test(raw.trim()) ||
-    Number.isNaN(Date.parse(raw))
-  ) {
-    throw new TaskError('invalid', `${field} must be an ISO-8601 date or datetime string, got: ${display(raw)}`);
-  }
-  return raw.trim();
-}
-
 /** A sort entry is a field name ("due") or {field, direction}; a bare sort value may be one entry or an array. */
 function parseSort(raw: unknown): SortSpec[] | undefined {
   if (raw === undefined || raw === null) {
@@ -645,8 +615,4 @@ function parseLimit(raw: unknown): number | undefined {
     throw new TaskError('invalid', `limit must be a positive integer, got: ${display(raw)}`);
   }
   return raw;
-}
-
-function display(value: unknown): string {
-  return JSON.stringify(value) ?? String(value);
 }

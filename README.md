@@ -96,6 +96,7 @@ The same core the MCP tools wrap, curl-friendly:
 | `POST /tasks/:id/done` | done verb (any non-done → `done`) |
 | `POST /tasks/:id/annotations` | append an Annotation |
 | `GET /tasks/:id/annotations` | list Annotations, newest first |
+| `GET /tasks/:id/changes` | full change history, newest first (`?limit=` default 100, `?offset=`) |
 
 Create a Project bound to a local path:
 

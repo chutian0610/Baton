@@ -1,6 +1,7 @@
 import type { Actor } from './actors.js';
 import type { Db } from './db.js';
-import { TaskError } from './tasks.js';
+import { display } from './internal.js';
+import { requireTaskId, TaskError } from './tasks.js';
 
 /**
  * Annotations (CONTEXT.md): timestamped, append-only notes attached to a
@@ -87,20 +88,9 @@ function asView(row: AnnotationRow): AnnotationView {
   };
 }
 
-/** Mirrors the task layer's id and text validation so both surfaces agree. */
-function requireTaskId(raw: unknown): number {
-  if (typeof raw === 'number' && Number.isInteger(raw)) {
-    return raw;
-  }
-  if (typeof raw === 'string' && /^\d+$/.test(raw)) {
-    return Number(raw);
-  }
-  throw new TaskError('invalid', `task id must be an integer, got: ${JSON.stringify(raw) ?? String(raw)}`);
-}
-
 function parseBody(raw: unknown): string {
   if (typeof raw !== 'string' || raw.trim() === '') {
-    throw new TaskError('invalid', `annotation body must be a non-empty string, got: ${JSON.stringify(raw) ?? String(raw)}`);
+    throw new TaskError('invalid', `annotation body must be a non-empty string, got: ${display(raw)}`);
   }
   return raw.trim();
 }

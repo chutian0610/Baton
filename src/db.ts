@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
  * SQLite layer: one database file per data dir, WAL mode, and a linear
  * schema-version migration machinery driven by the `user_version` pragma.
  *
- * Later tickets append entries to MIGRATIONS; nothing else calls migrations
+ * Later changes append entries to MIGRATIONS; nothing else calls migrations
  * by hand. Opening an up-to-date database applies nothing.
  */
 export type Db = Database.Database;

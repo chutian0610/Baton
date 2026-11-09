@@ -65,13 +65,18 @@ function ensureProject(): Promise<void> {
 const STATUSES = ['pending', 'active', 'waiting', 'done', 'dropped'] as const;
 type Status = (typeof STATUSES)[number];
 
-/** Legal targets per the spec's transition table; everything else is illegal. */
+/**
+ * Legal targets per the spec's transition table; everything else is illegal.
+ * done -> dropped and dropped -> done are legal (the spec words done as "any
+ * non-done -> done" and drop as "any non-dropped -> dropped"); only
+ * same-status moves stay outside the machine.
+ */
 const LEGAL: Record<Status, Status[]> = {
   pending: ['active', 'waiting', 'done', 'dropped'],
   active: ['waiting', 'done', 'dropped'],
   waiting: ['active', 'done', 'dropped'],
-  done: ['pending'],
-  dropped: ['pending'],
+  done: ['pending', 'dropped'],
+  dropped: ['pending', 'done'],
 };
 
 /** Creates a fresh task and drives it to `status` through legal moves. */

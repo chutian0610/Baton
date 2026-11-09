@@ -1,4 +1,5 @@
 import type { Db } from './db.js';
+import { display } from './internal.js';
 import { TaskError } from './tasks.js';
 
 /**
@@ -195,8 +196,4 @@ export function parseDeps(raw: unknown): number[] {
     }
   }
   return normalized.sort((a, b) => a - b);
-}
-
-function display(value: unknown): string {
-  return JSON.stringify(value) ?? String(value);
 }

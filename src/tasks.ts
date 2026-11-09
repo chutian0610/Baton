@@ -3,7 +3,8 @@ import { listAnnotations, type AnnotationView } from './annotations.js';
 import { recentChanges, recordChange, type ChangeLogView, type FieldDiff } from './changelog.js';
 import type { Db } from './db.js';
 import { deriveBlocked, deriveProgress, findDependencyCyclePath, listDeps, parseDeps, validateDeps, writeDeps } from './deps.js';
-import { applyStatusTransition, parseStatusTarget, taskIntervals, type IntervalView } from './lifecycle.js';
+import { asBody, display } from './internal.js';
+import { applyStatusTransition, parseStatusTarget, taskIntervals, type IntervalView, type TaskStatus } from './lifecycle.js';
 import { ProjectError, resolveCurrentProject } from './projects.js';
 
 /**
@@ -49,11 +50,14 @@ export class TaskError extends Error {
   }
 }
 
+/** A Task's priority: high, medium, low (the only stored values; null = none). */
+export type TaskPriority = 'H' | 'M' | 'L';
+
 /** A Task as exposed through both API surfaces (views are camelCase, like ProjectView). */
 export interface TaskView {
   id: number;
   title: string;
-  status: string;
+  status: TaskStatus;
   projectId: number;
   projectName: string;
   parentId: number | null;
@@ -70,7 +74,7 @@ export interface TaskView {
    */
   progress: number | null;
   due: string | null;
-  priority: string | null;
+  priority: TaskPriority | null;
   effort: string | null;
   hiddenUntil: string | null;
   createdAt: string;
@@ -150,7 +154,7 @@ export function createTask(db: Db, input: unknown, actor: Actor): TaskView {
   const priority = parsePriority(body.priority);
   const effort = parseEffort(body.effort);
   const hiddenUntil = parseDatetime(pickHiddenUntil(body), 'hidden_until');
-  const parent = parseRef(body.parent, 'parent', true) ?? null; // absent or null both mean: root task
+  const parent = parseRef(body.parent, 'parent') ?? null; // absent or null both mean: root task
   const project = parseProjectRef(body.project);
 
   const create = db.transaction((): TaskView => {
@@ -230,7 +234,7 @@ export function updateTask(db: Db, id: unknown, input: unknown, actor: Actor): T
     pickHiddenUntil(body) === undefined && body.hiddenUntil === undefined
       ? undefined
       : parseDatetime(pickHiddenUntil(body) ?? body.hiddenUntil, 'hidden_until');
-  const parent = body.parent === undefined ? undefined : parseRef(body.parent, 'parent', true);
+  const parent = body.parent === undefined ? undefined : parseRef(body.parent, 'parent');
 
   const update = db.transaction((): TaskView => {
     const current = requireTaskRow(db, taskId);
@@ -407,6 +411,25 @@ function sameValue(a: unknown, b: unknown): boolean {
 // --------------------------------------------------------------------------
 
 /**
+ * Looks up a project by name or id (the shared name-or-id ref). Unknown refs
+ * are a `not-found` TaskError; shared with the query layer so every surface
+ * that accepts a project ref reports it identically.
+ */
+export function findProject(db: Db, ref: string | number): { id: number; name: string } {
+  const row =
+    typeof ref === 'number'
+      ? db.prepare('SELECT id, name FROM projects WHERE id = ?').get(ref)
+      : db.prepare('SELECT id, name FROM projects WHERE name = ?').get(ref);
+  if (row === undefined) {
+    throw new TaskError(
+      'not-found',
+      typeof ref === 'number' ? `unknown project id: ${ref}` : `unknown project name: ${display(ref)}`,
+    );
+  }
+  return row as { id: number; name: string };
+}
+
+/**
  * Determines the owning project: explicit ref wins (even over a cwd);
  * otherwise the cwd resolves to the Current Project; otherwise an `unbound`
  * error naming the fix.
@@ -417,17 +440,7 @@ function resolveOwningProject(
   cwd: unknown,
 ): { id: number; name: string } {
   if (project !== undefined) {
-    const row =
-      typeof project === 'number'
-        ? db.prepare('SELECT id, name FROM projects WHERE id = ?').get(project)
-        : db.prepare('SELECT id, name FROM projects WHERE name = ?').get(project);
-    if (row === undefined) {
-      throw new TaskError(
-        'not-found',
-        typeof project === 'number' ? `unknown project id: ${project}` : `unknown project name: ${display(project)}`,
-      );
-    }
-    return row as { id: number; name: string };
+    return findProject(db, project);
   }
   if (cwd !== undefined && cwd !== null) {
     try {
@@ -496,7 +509,7 @@ export function assembleTask(db: Db, id: number): TaskView | undefined {
   return {
     id: row.id,
     title: row.title,
-    status: row.status,
+    status: row.status as TaskStatus,
     projectId: row.project_id,
     projectName: projectNameById(db, row.project_id),
     parentId: row.parent_id,
@@ -505,7 +518,7 @@ export function assembleTask(db: Db, id: number): TaskView | undefined {
     blocked: deriveBlocked(db, deps),
     progress: deriveProgress(db, id),
     due: row.due,
-    priority: row.priority,
+    priority: row.priority as TaskPriority | null,
     effort: row.effort,
     hiddenUntil: row.hidden_until,
     createdAt: row.created_at,
@@ -533,10 +546,6 @@ function writeTags(db: Db, taskId: number, tags: string[]): void {
 // --------------------------------------------------------------------------
 // Input parsing (uniform "invalid" messages shared by HTTP and MCP)
 // --------------------------------------------------------------------------
-
-function asBody(input: unknown): Record<string, unknown> {
-  return (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>;
-}
 
 export function requireTaskId(raw: unknown): number {
   if (typeof raw === 'number' && Number.isInteger(raw)) {
@@ -577,7 +586,7 @@ function parseTags(raw: unknown): string[] {
   return normalized;
 }
 
-function parsePriority(raw: unknown): string | null {
+function parsePriority(raw: unknown): TaskPriority | null {
   if (raw === undefined || raw === null) {
     return null;
   }
@@ -597,8 +606,12 @@ function parseEffort(raw: unknown): string | null {
   return raw.trim();
 }
 
-/** Accepts date or datetime strings in ISO-8601 shape (YYYY-MM-DD[...]). */
-function parseDatetime(raw: unknown, field: string): string | null {
+/**
+ * Accepts date or datetime strings in ISO-8601 shape (YYYY-MM-DD[...]).
+ * Shared with the query layer (dueBefore/dueAfter filters), so task fields
+ * and filter bounds validate identically.
+ */
+export function parseDatetime(raw: unknown, field: string): string | null {
   if (raw === undefined || raw === null) {
     return null;
   }
@@ -625,17 +638,14 @@ function pickHiddenUntil(body: Record<string, unknown>): unknown {
 /**
  * Parses an id-valued reference (task parent). `undefined` means "key absent"
  * (the caller decides what that implies); explicit null means "no reference"
- * and is only accepted when `allowNull` (reparent-to-root sends parent: null).
+ * (absent/null at create means a root task; null on update detaches to root).
  */
-function parseRef(raw: unknown, field: string, allowNull: boolean): number | null | undefined {
+function parseRef(raw: unknown, field: string): number | null | undefined {
   if (raw === undefined) {
     return undefined;
   }
   if (raw === null) {
-    if (allowNull) {
-      return null;
-    }
-    throw new TaskError('invalid', `${field} must be a task id (integer), got: ${display(raw)}`);
+    return null;
   }
   if (typeof raw === 'number' && Number.isInteger(raw)) {
     return raw;
@@ -643,7 +653,12 @@ function parseRef(raw: unknown, field: string, allowNull: boolean): number | nul
   throw new TaskError('invalid', `${field} must be a task id (integer), got: ${display(raw)}`);
 }
 
-function parseProjectRef(raw: unknown): string | number | undefined {
+/**
+ * Parses a project reference: a project name (string) or a project id
+ * (integer). Shared with the query layer (the filter's `project` field), so
+ * every surface that names a project accepts the same shape.
+ */
+export function parseProjectRef(raw: unknown): string | number | undefined {
   if (raw === undefined || raw === null) {
     return undefined;
   }
@@ -657,8 +672,4 @@ function parseProjectRef(raw: unknown): string | number | undefined {
     return raw;
   }
   throw new TaskError('invalid', `project must be a project name (string) or project id (integer), got: ${display(raw)}`);
-}
-
-function display(value: unknown): string {
-  return JSON.stringify(value) ?? String(value);
 }

@@ -1,6 +1,7 @@
 import type { Actor } from './actors.js';
 import { recordStatusChange } from './changelog.js';
 import type { Db } from './db.js';
+import { display } from './internal.js';
 import { assembleTask, requireTaskId, requireTaskRow, TaskError, type TaskView } from './tasks.js';
 
 /**
@@ -29,13 +30,15 @@ export const TASK_STATUSES: readonly TaskStatus[] = ['pending', 'active', 'waiti
  * and `drop` as "any non-dropped -> dropped", so same-status transitions are
  * outside the machine for every status and are rejected uniformly rather than
  * treated as no-ops (consistent, and callers learn their move changed nothing).
+ * That "any" also covers the closed pair: done -> dropped and dropped -> done
+ * are legal; only reopen (-> pending) leaves the closed statuses otherwise.
  */
 const LEGAL_TARGETS: Record<TaskStatus, TaskStatus[]> = {
   pending: ['active', 'waiting', 'done', 'dropped'],
   active: ['waiting', 'done', 'dropped'],
   waiting: ['active', 'done', 'dropped'],
-  done: ['pending'], // reopen
-  dropped: ['pending'], // reopen
+  done: ['pending', 'dropped'], // reopen; drop (any non-dropped -> dropped)
+  dropped: ['pending', 'done'], // reopen; done (any non-done -> done)
 };
 
 /** A recorded Interval as exposed through both API surfaces. */
@@ -167,8 +170,4 @@ function closeOpenInterval(db: Db, taskId: number): void {
   db.prepare(
     "UPDATE intervals SET ended_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE task_id = ? AND ended_at IS NULL",
   ).run(taskId);
-}
-
-function display(value: unknown): string {
-  return JSON.stringify(value) ?? String(value);
 }
