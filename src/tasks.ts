@@ -2,10 +2,20 @@ import type { Actor } from './actors.js';
 import { listAnnotations, type AnnotationView } from './annotations.js';
 import { recentChanges, recordChange, type ChangeLogView, type FieldDiff } from './changelog.js';
 import type { Db } from './db.js';
-import { deriveBlocked, deriveProgress, findDependencyCyclePath, listDeps, parseDeps, validateDeps, writeDeps } from './deps.js';
+import {
+  deriveBlocked,
+  deriveProgress,
+  describeProjectBinding,
+  findDependencyCyclePath,
+  listDeps,
+  parseDeps,
+  projectName,
+  sameProjectOrBothUnbound,
+  validateDeps,
+  writeDeps,
+} from './deps.js';
 import { asBody, display } from './internal.js';
 import { applyStatusTransition, parseStatusTarget, taskIntervals, type IntervalView, type TaskStatus } from './lifecycle.js';
-import { ProjectError, resolveCurrentProject } from './projects.js';
 
 /**
  * Core Task operations — the "HTTP core" of ADR-0001, same layering as
@@ -15,29 +25,31 @@ import { ProjectError, resolveCurrentProject } from './projects.js';
  * message text identical.
  *
  * Scope of this layer: creation, the single-parent tree (ADR-0004: nesting,
- * reparenting, cycle rejection, one project per tree), field updates, and the
- * detail read (including the recorded Intervals and total active time). Status
- * transitions live in src/lifecycle.ts — the status machine — and are applied
- * by updateTask (the PATCH / task_update status path) and the verb entry
- * points (start/done). Dependencies (the DAG of ADR-0004) and the values
- * derived at read time from them and from the tree (blocked, progress —
- * ADR-0003) live in src/deps.ts and surface on every TaskView this module
- * assembles.
+ * reparenting, ancestor-cycle rejection — trees may span projects, ADR-0005),
+ * field updates, the project-attribute move (binding/unbinding a Task and its
+ * whole subtree in one cascade, also ADR-0005), and the detail read (including
+ * the recorded Intervals and total active time). Status transitions live in
+ * src/lifecycle.ts — the status machine — and are applied by updateTask (the
+ * PATCH / task_update status path) and the verb entry points (start/done).
+ * Dependencies (the DAG of ADR-0004) and the values derived at read time from
+ * them and from the tree (blocked, progress — ADR-0003) live in src/deps.ts
+ * and surface on every TaskView this module assembles.
  *
  * Every mutation appends exactly one change-log row (src/changelog.ts) with
  * the field-level diff and the Actor, inside the same transaction as the
- * mutation itself. The Actor is a parameter threaded from the calling
- * surface — this layer never derives it on its own.
+ * mutation itself; a cascade move appends one row per affected Task, still in
+ * one transaction under one Actor. The Actor is a parameter threaded from the
+ * calling surface — this layer never derives it on its own.
  */
 
 /**
  * `invalid` -> HTTP 400 / `not-found` | `unbound` -> 404 /
  * `conflict` | `unsupported` -> 409.
  *
- * `unsupported` carries the rule-based refusals of this stage (status
- * changes at create, project moves): the request is well-formed, but the
- * current version will not perform it. Grouping those with `conflict` under
- * 409 keeps 400 strictly "malformed payload".
+ * `unsupported` carries the rule-based refusals of this stage (status changes
+ * at create): the request is well-formed, but the current version will not
+ * perform it. Grouping those with `conflict` under 409 keeps 400 strictly
+ * "malformed payload".
  */
 export type TaskErrorCode = 'invalid' | 'not-found' | 'unbound' | 'conflict' | 'unsupported';
 
@@ -58,8 +70,10 @@ export interface TaskView {
   id: number;
   title: string;
   status: TaskStatus;
-  projectId: number;
-  projectName: string;
+  /** null when the Task is Unbound (ADR-0005: the state every Task starts in). */
+  projectId: number | null;
+  /** null when the Task is Unbound. */
+  projectName: string | null;
   parentId: number | null;
   /** Lowercase, deduplicated, sorted. */
   tags: string[];
@@ -106,7 +120,7 @@ interface TaskRow {
   id: number;
   title: string;
   status: string;
-  project_id: number;
+  project_id: number | null;
   parent_id: number | null;
   due: string | null;
   priority: string | null;
@@ -124,16 +138,20 @@ const TASK_COLUMNS =
 // --------------------------------------------------------------------------
 
 /**
- * Creates a Task. Project assignment: an explicit `project` (name or id)
- * wins; otherwise `cwd` is resolved to the Current Project via the projects
- * resolver; neither being usable is a domain error naming the fix. A `parent`
- * must exist and belong to the same project — a tree lives inside one
- * project (ADR-0004). New tasks start `pending`; `status` in the input is
- * rejected (not yet supported). `deps` name tasks the new task depends on:
- * each must exist and belong to the same project. Creation can never form a
- * dependency cycle — no stored edge can point at a task that did not exist
- * when its dependency was written — so only the per-edge rules are checked
- * (before the insert, which also makes a guessed future id fail as unknown).
+ * Creates a Task — capture-first (ADR-0005): every Task starts Unbound and
+ * the caller's cwd is never consulted. An explicit `project` (name or id)
+ * assigns the attribute at birth; an absent or null `project` leaves the Task
+ * Unbound (`projectId: null`). An unknown project ref is a `not-found` error.
+ * A `parent` must exist; parent and child may live in different projects (a
+ * tree expresses decomposition, not organization). New tasks start `pending`;
+ * `status` in the input is rejected (not yet supported). `deps` name tasks
+ * the new task depends on: each must exist and satisfy the one surviving
+ * project constraint — dependencies connect tasks of the same project, or two
+ * Unbound tasks (validated against the new task's project). Creation can
+ * never form a dependency cycle — no stored edge can point at a task that did
+ * not exist when its dependency was written — so only the per-edge rules are
+ * checked (before the insert, which also makes a guessed future id fail as
+ * unknown).
  *
  * The creation is recorded on the change log (every field as `after`) with
  * the caller's Actor, in the same transaction.
@@ -155,25 +173,17 @@ export function createTask(db: Db, input: unknown, actor: Actor): TaskView {
   const effort = parseEffort(body.effort);
   const hiddenUntil = parseDatetime(pickHiddenUntil(body), 'hidden_until');
   const parent = parseRef(body.parent, 'parent') ?? null; // absent or null both mean: root task
-  const project = parseProjectRef(body.project);
+  const project = parseProjectRef(body.project); // absent or null both mean: Unbound (ADR-0005)
 
   const create = db.transaction((): TaskView => {
     const parentRow = parent === null ? undefined : requireTaskRow(db, parent, 'parent');
-    const owner = resolveOwningProject(db, project, body.cwd);
-    if (parentRow !== undefined && parentRow.project_id !== owner.id) {
-      const parentProject = projectNameById(db, parentRow.project_id);
-      throw new TaskError(
-        'conflict',
-        `parent task ${parent} belongs to project ${parentProject}, but the new task would belong to project ${owner.name}; ` +
-          'a task tree must live inside one project',
-      );
-    }
-    validateDeps(db, undefined, owner.id, deps);
+    const owner = project === undefined ? null : findProject(db, project).id;
+    validateDeps(db, undefined, owner, deps);
 
     const id = Number(
       db
         .prepare('INSERT INTO tasks (title, project_id, parent_id, due, priority, effort, hidden_until) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(title, owner.id, parent, due, priority, effort, hiddenUntil).lastInsertRowid,
+        .run(title, owner, parent, due, priority, effort, hiddenUntil).lastInsertRowid,
     );
     writeTags(db, id, tags);
     writeDeps(db, id, deps);
@@ -195,34 +205,39 @@ export function createTask(db: Db, input: unknown, actor: Actor): TaskView {
 /**
  * Updates a Task's structural and field attributes: title, tags, due,
  * priority, effort, hidden_until, parent (reparenting; null makes the task a
- * root), and deps (the dependency set, replaced wholesale like tags — `null`
- * or `[]` clears it). Dependencies must reference existing tasks in the same
- * project, must not include the task itself, and must keep the graph a DAG:
- * a dep set that would form a cycle is rejected with the offending path in
- * the message, before anything is written. A provided `status` goes through
- * the status machine (src/lifecycle.ts) inside the same transaction, so
- * field, dep, and status changes commit or roll back together; illegal
- * transitions are `conflict` errors naming the current status. Rejected with
- * `unsupported`: `project`/`project_id` (a tree cannot move between projects
- * in v1). Reparenting that would make a task its own ancestor is rejected
- * with the cycle path in the message. Only provided keys change; null clears
- * an optional field.
+ * root), deps (the dependency set, replaced wholesale like tags — `null` or
+ * `[]` clears it), and `project` (ADR-0005: the attribute move). Dependencies
+ * must reference existing tasks of the same project as the task — or be
+ * Unbound like it (the same-project-or-two-unbound rule, validated against
+ * the task's project AFTER this PATCH applies) — must not include the task
+ * itself, and must keep the graph a DAG: a dep set that would form a cycle is
+ * rejected with the offending path in the message. A provided `status` goes
+ * through the status machine (src/lifecycle.ts) inside the same transaction,
+ * so field, dep, and status changes commit or roll back together; illegal
+ * transitions are `conflict` errors naming the current status.
+ *
+ * The `project` move is a cascade: the task AND its whole subtree (every
+ * descendant) are assigned in one call — `project: null` unbinds the subtree.
+ * The dep-set replacement (if any) runs first so the move is validated against
+ * the FINAL edge set: every dependency edge touching the moved set is checked
+ * (both directions; edges wholly inside the set are fine) — a move that would
+ * leave a cross-project edge is rejected as `conflict` with the offending
+ * pairs listed, and the whole PATCH rolls back. Reparenting that would make a
+ * task its own ancestor is rejected with the cycle path in the message. Only
+ * provided keys change; null clears an optional field.
  *
  * The update is recorded on the change log with exactly the fields that
  * actually changed (absent -> value counts as a change) and the caller's
- * Actor, in the same transaction. Status transitions are recorded by their
- * own paths (see recordStatusChange).
+ * Actor, in the same transaction; a cascade move additionally appends one
+ * `projectId` row per affected descendant. A same-value assignment keeps the
+ * one-row PATCH convention (an empty diff, no descendant rows). Status
+ * transitions are recorded by their own paths (see recordStatusChange).
  */
 export function updateTask(db: Db, id: unknown, input: unknown, actor: Actor): TaskView {
   const taskId = requireTaskId(id);
   const body = asBody(input);
   const statusTarget = body.status === undefined ? undefined : parseStatusTarget(body.status);
-  if (body.project !== undefined || body.project_id !== undefined || body.projectId !== undefined) {
-    throw new TaskError(
-      'unsupported',
-      'moving a task between projects is not supported; create the task in the target project instead',
-    );
-  }
+  const project = parseProjectUpdate(body); // undefined = key absent (leave unchanged); null = Unbound
 
   const title = body.title === undefined ? undefined : parseTitle(body.title);
   const tags = body.tags === undefined ? undefined : parseTags(body.tags);
@@ -249,15 +264,6 @@ export function updateTask(db: Db, id: unknown, input: unknown, actor: Actor): T
         newParentId = null; // detach: make the task a root
       } else {
         const parentRow = requireTaskRow(db, parent, 'parent');
-        if (parentRow.project_id !== current.project_id) {
-          const parentProject = projectNameById(db, parentRow.project_id);
-          const taskProject = projectNameById(db, current.project_id);
-          throw new TaskError(
-            'conflict',
-            `parent task ${parent} belongs to project ${parentProject}, but task ${taskId} belongs to project ${taskProject}; ` +
-              'a task tree must live inside one project',
-          );
-        }
         if (parent === taskId) {
           throw new TaskError('conflict', `task ${taskId} cannot be its own parent`);
         }
@@ -270,6 +276,52 @@ export function updateTask(db: Db, id: unknown, input: unknown, actor: Actor): T
           );
         }
         newParentId = parent;
+      }
+    }
+
+    // The task's project AFTER this PATCH: an explicit assignment wins over
+    // the stored attribute. The move (if any) cascades to the whole subtree.
+    const newProjectId =
+      project === undefined ? current.project_id : project === null ? null : findProject(db, project).id;
+
+    // Dep-set replacement runs first, against the post-PATCH project, so the
+    // cascade validation below sees the FINAL edge set (a PATCH may bind a
+    // task and set its same-project deps in one call).
+    if (deps !== undefined) {
+      validateDeps(db, taskId, newProjectId, deps);
+      const cyclePath = findDependencyCyclePath(db, taskId, deps);
+      if (cyclePath !== undefined) {
+        throw new TaskError(
+          'conflict',
+          `task ${taskId} depending on task ${cyclePath[1]} would create a dependency cycle ` +
+            `(cycle: ${cyclePath.join(' -> ')})`,
+        );
+      }
+      writeDeps(db, taskId, deps);
+    }
+
+    // The attribute move: validate every dependency edge touching the moved
+    // subtree against the FINAL edge set, then flip the attribute in one
+    // UPDATE and append one change-log row per affected descendant.
+    if (project !== undefined && newProjectId !== current.project_id) {
+      const movedIds = collectSubtreeIds(db, taskId);
+      const placeholders = placeholdersFor(movedIds);
+      const beforeRows = db
+        .prepare(`SELECT id, project_id FROM tasks WHERE id IN (${placeholders})`)
+        .all(...movedIds) as { id: number; project_id: number | null }[];
+      const beforeProjectIds = new Map(beforeRows.map((row) => [row.id, row.project_id]));
+      validateProjectMove(db, taskId, movedIds, newProjectId);
+      db.prepare(
+        `UPDATE tasks SET project_id = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id IN (${placeholders})`,
+      ).run(newProjectId, ...movedIds);
+      for (const movedId of movedIds) {
+        if (movedId === taskId) {
+          continue; // the target's row comes from the generic field diff below
+        }
+        const beforeProjectId = beforeProjectIds.get(movedId);
+        if (beforeProjectId !== undefined && beforeProjectId !== newProjectId) {
+          recordChange(db, 'task', movedId, { projectId: { before: beforeProjectId, after: newProjectId } }, actor);
+        }
       }
     }
 
@@ -304,19 +356,6 @@ export function updateTask(db: Db, id: unknown, input: unknown, actor: Actor): T
 
     if (tags !== undefined) {
       writeTags(db, taskId, tags);
-    }
-
-    if (deps !== undefined) {
-      validateDeps(db, taskId, current.project_id, deps);
-      const cyclePath = findDependencyCyclePath(db, taskId, deps);
-      if (cyclePath !== undefined) {
-        throw new TaskError(
-          'conflict',
-          `task ${taskId} depending on task ${cyclePath[1]} would create a dependency cycle ` +
-            `(cycle: ${cyclePath.join(' -> ')})`,
-        );
-      }
-      writeDeps(db, taskId, deps);
     }
 
     if (statusTarget !== undefined) {
@@ -429,35 +468,97 @@ export function findProject(db: Db, ref: string | number): { id: number; name: s
   return row as { id: number; name: string };
 }
 
+/** An IN-list's `?` placeholders, one per id (callers bind the ids in order). */
+function placeholdersFor(ids: number[]): string {
+  return ids.map(() => '?').join(', ');
+}
+
 /**
- * Determines the owning project: explicit ref wins (even over a cwd);
- * otherwise the cwd resolves to the Current Project; otherwise an `unbound`
- * error naming the fix.
+ * Walks `rootId`'s descendants breadth-first (the task itself first): the
+ * moved set of a cascade project assignment (ADR-0005 — binding a Task binds
+ * its whole subtree).
  */
-function resolveOwningProject(
-  db: Db,
-  project: string | number | undefined,
-  cwd: unknown,
-): { id: number; name: string } {
-  if (project !== undefined) {
-    return findProject(db, project);
-  }
-  if (cwd !== undefined && cwd !== null) {
-    try {
-      const current = resolveCurrentProject(db, cwd);
-      return { id: current.project.id, name: current.project.name };
-    } catch (err) {
-      if (err instanceof ProjectError && (err.code === 'unbound' || err.code === 'invalid')) {
-        throw new TaskError(err.code, err.message);
-      }
-      throw err;
+function collectSubtreeIds(db: Db, rootId: number): number[] {
+  const ids = [rootId];
+  const childrenOf = db.prepare('SELECT id FROM tasks WHERE parent_id = ?');
+  for (let index = 0; index < ids.length; index++) {
+    const rows = childrenOf.all(ids[index]) as { id: number }[];
+    for (const row of rows) {
+      ids.push(row.id);
     }
   }
-  throw new TaskError(
-    'unbound',
-    'cannot determine the project for this task: pass "project" (name or id) or a "cwd" that resolves to one ' +
-      '(bind the directory with project_create first)',
-  );
+  return ids;
+}
+
+/**
+ * Proves a cascade project assignment keeps the one surviving project
+ * constraint (ADR-0005): after the move, every dependency edge touching the
+ * moved set must connect tasks of the same project — or two Unbound tasks.
+ * Edges WHOLLY INSIDE the moved set always pass (both endpoints take the new
+ * project together). Edge endpoints outside the moved set keep their stored
+ * project; a violation is a `conflict` listing every offending pair in a
+ * "task R (still in project Y) depends on task M" shape so the caller knows
+ * exactly what to resolve first. Runs inside the caller's transaction, before
+ * the UPDATE, so a rejection leaves everything untouched.
+ */
+function validateProjectMove(db: Db, taskId: number, movedIds: number[], newProjectId: number | null): void {
+  const moved = new Set(movedIds);
+  const placeholders = placeholdersFor(movedIds);
+  const edges = db
+    .prepare(
+      `SELECT task_id AS dependent, depends_on AS dependency FROM task_deps
+        WHERE task_id IN (${placeholders}) OR depends_on IN (${placeholders})`,
+    )
+    .all(...movedIds, ...movedIds) as { dependent: number; dependency: number }[];
+  if (edges.length === 0) {
+    return;
+  }
+
+  const outsideProjects = new Map<number, number | null>();
+  const findProjectId = db.prepare('SELECT project_id FROM tasks WHERE id = ?');
+  // The project an edge endpoint will have AFTER the move: moved endpoints
+  // take the new project, others keep theirs.
+  const projectAfterMove = (id: number): number | null => {
+    if (moved.has(id)) {
+      return newProjectId;
+    }
+    let projectId = outsideProjects.get(id);
+    if (projectId === undefined) {
+      const row = findProjectId.get(id) as { project_id: number | null } | undefined;
+      if (row === undefined) {
+        throw new Error(`dependency edge references missing task ${id}`);
+      }
+      projectId = row.project_id;
+      outsideProjects.set(id, projectId);
+    }
+    return projectId;
+  };
+  // Outside endpoints keep their stored project, hence the shared binding
+  // description's "still" wording (dep-set validation uses the 'belongs' one).
+  const describeOutside = (id: number): string => describeProjectBinding(db, projectAfterMove(id), 'still');
+
+  const violations: string[] = [];
+  for (const edge of edges) {
+    const dependentProject = projectAfterMove(edge.dependent);
+    const dependencyProject = projectAfterMove(edge.dependency);
+    if (sameProjectOrBothUnbound(dependentProject, dependencyProject)) {
+      continue; // same project, or both Unbound — the one legal cross-attr pairing
+    }
+    violations.push(
+      moved.has(edge.dependent)
+        ? `task ${edge.dependent} depends on task ${edge.dependency} (${describeOutside(edge.dependency)})`
+        : `task ${edge.dependent} (${describeOutside(edge.dependent)}) depends on task ${edge.dependency}`,
+    );
+  }
+  if (violations.length > 0) {
+    violations.sort(); // deterministic message text
+    const target = newProjectId === null ? 'unbound' : `project ${projectName(db, newProjectId)}`;
+    throw new TaskError(
+      'conflict',
+      `moving task ${taskId} (with its subtree) to ${target} would leave cross-project dependencies: ` +
+        `${violations.join('; ')}; resolve them first`,
+    );
+  }
 }
 
 /**
@@ -526,12 +627,9 @@ export function assembleTask(db: Db, id: number): TaskView | undefined {
   };
 }
 
-function projectNameById(db: Db, id: number): string {
-  const row = db.prepare('SELECT name FROM projects WHERE id = ?').get(id) as { name: string } | undefined;
-  if (row === undefined) {
-    throw new Error(`task references missing project ${id}`);
-  }
-  return row.name;
+/** A task's project name, or null when the task is Unbound (never a made-up placeholder). */
+function projectNameById(db: Db, id: number | null): string | null {
+  return id === null ? null : projectName(db, id);
 }
 
 /** Replaces a task's tags wholesale (callers normalize first). */
@@ -672,4 +770,41 @@ export function parseProjectRef(raw: unknown): string | number | undefined {
     return raw;
   }
   throw new TaskError('invalid', `project must be a project name (string) or project id (integer), got: ${display(raw)}`);
+}
+
+/**
+ * Parses the update-side project assignment: a project name (string), a
+ * project id (integer), or null (unbind — the whole subtree goes Unbound,
+ * ADR-0005). `undefined` means "key absent": the project is left unchanged.
+ * The read-side spellings project_id/projectId are accepted as aliases (like
+ * hidden_until/hiddenUntil); passing several spellings is an error unless
+ * they are identical.
+ */
+function parseProjectUpdate(body: Record<string, unknown>): string | number | null | undefined {
+  const spellings: Array<[string, unknown]> = [];
+  if (body.project !== undefined) {
+    spellings.push(['project', body.project]);
+  }
+  if (body.project_id !== undefined) {
+    spellings.push(['project_id', body.project_id]);
+  }
+  if (body.projectId !== undefined) {
+    spellings.push(['projectId', body.projectId]);
+  }
+  if (spellings.length === 0) {
+    return undefined;
+  }
+  const [firstKey, firstValue] = spellings[0];
+  for (const [key, value] of spellings.slice(1)) {
+    if (JSON.stringify(value) !== JSON.stringify(firstValue)) {
+      throw new TaskError(
+        'invalid',
+        `pass only one of project, project_id, projectId (they must agree when repeated), got conflicting values for ${firstKey} and ${key}`,
+      );
+    }
+  }
+  if (firstValue === null) {
+    return null; // explicit unbind, distinct from "key absent"
+  }
+  return parseProjectRef(firstValue); // string | number; anything else is invalid
 }

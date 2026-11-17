@@ -4,11 +4,11 @@ import { TaskError } from './tasks.js';
 
 /**
  * The Dependency DAG (CONTEXT.md: Dependency; ADR-0004: deps are directed
- * edges orthogonal to the parent/child tree; a project is a self-contained
- * board, so edges stay inside one project). This module owns everything about
- * dependency edges and the two values derived from structure (ADR-0003:
- * derived data is never stored — there is no blocked column and no percent
- * field anywhere):
+ * edges orthogonal to the parent/child tree; ADR-0005: the one project
+ * constraint — edges connect same-project tasks, or two Unbound tasks). This
+ * module owns everything about dependency edges and the two values derived
+ * from structure (ADR-0003: derived data is never stored — there is no
+ * blocked column and no percent field anywhere):
  *
  * - deps are a SET on the task, replaced wholesale by task_update (like tags);
  * - Blocked: true while any dependency is neither done nor dropped; advisory
@@ -79,16 +79,59 @@ export function deriveProgress(db: Db, taskId: number): number | null {
 }
 
 /**
+ * The one surviving project constraint (ADR-0005) as an edge predicate: a
+ * dependency edge is legal exactly when its two endpoints share a project —
+ * or are both Unbound (null = Unbound). Dep-set validation (validateDeps)
+ * checks it per proposed edge; a cascade project move (validateProjectMove in
+ * src/tasks.ts) checks every edge touching the moved set against the
+ * post-move projects. One definition, so the rule cannot drift apart.
+ */
+export function sameProjectOrBothUnbound(a: number | null, b: number | null): boolean {
+  return a === b;
+}
+
+/**
+ * A project's name by id — the one `SELECT name FROM projects WHERE id = ?`
+ * behind every message or view that names a project. A missing row is a
+ * broken reference (impossible with FK enforcement); it fails loudly instead
+ * of rendering "undefined".
+ */
+export function projectName(db: Db, id: number): string {
+  const row = db.prepare('SELECT name FROM projects WHERE id = ?').get(id) as { name: string } | undefined;
+  if (row === undefined) {
+    throw new Error(`task references missing project ${id}`);
+  }
+  return row.name;
+}
+
+/**
+ * Renders one edge endpoint's project binding as error-message text — the
+ * shared description behind both validators, with the two wordings tests
+ * lock: dep-set validation says "is unbound" / "belongs to project X", while
+ * a cascade project move says "still unbound" / "still in project X"
+ * ("still" marks an endpoint that keeps its stored project while the moved
+ * set takes the new one).
+ */
+export function describeProjectBinding(db: Db, projectId: number | null, wording: 'belongs' | 'still'): string {
+  if (projectId === null) {
+    return wording === 'still' ? 'still unbound' : 'is unbound';
+  }
+  return wording === 'still' ? `still in project ${projectName(db, projectId)}` : `belongs to project ${projectName(db, projectId)}`;
+}
+
+/**
  * Validates a proposed dependency set for a task being created (taskId
  * undefined — the task does not exist yet) or updated: every dependency must
- * exist and belong to the same project (edges never cross projects), and a
- * task cannot depend on itself. Cycles are checked separately
+ * exist, a task cannot depend on itself, and the one surviving project
+ * constraint (ADR-0005) holds — dependencies connect tasks of the same
+ * project, or two Unbound tasks. `projectId` is the task's project AFTER the
+ * write (null = Unbound). Cycles are checked separately
  * (findDependencyCyclePath) since only updates can form them.
  */
 export function validateDeps(
   db: Db,
   taskId: number | undefined,
-  projectId: number,
+  projectId: number | null,
   deps: number[],
 ): void {
   const findTask = db.prepare('SELECT id, project_id FROM tasks WHERE id = ?');
@@ -96,21 +139,17 @@ export function validateDeps(
     if (taskId !== undefined && dep === taskId) {
       throw new TaskError('conflict', `task ${taskId} cannot depend on itself`);
     }
-    const row = findTask.get(dep) as { id: number; project_id: number } | undefined;
+    const row = findTask.get(dep) as { id: number; project_id: number | null } | undefined;
     if (row === undefined) {
       throw new TaskError('not-found', `unknown dependency task id: ${dep}`);
     }
-    if (row.project_id !== projectId) {
-      const depProject = db.prepare('SELECT name FROM projects WHERE id = ?').get(row.project_id) as {
-        name: string;
-      };
-      const ownProject = db.prepare('SELECT name FROM projects WHERE id = ?').get(projectId) as {
-        name: string;
-      };
+    if (!sameProjectOrBothUnbound(row.project_id, projectId)) {
+      const who = taskId === undefined ? 'the new task' : `task ${taskId}`;
       throw new TaskError(
         'conflict',
-        `dependency task ${dep} belongs to project ${depProject.name}, but ${taskId === undefined ? 'the new task' : `task ${taskId}`} would belong to project ${ownProject.name}; ` +
-          'dependencies must stay inside one project (a project is a self-contained board)',
+        `dependency task ${dep} ${describeProjectBinding(db, row.project_id, 'belongs')}, but ${who} ` +
+          `${describeProjectBinding(db, projectId, 'belongs')}; ` +
+          'dependencies must connect tasks of the same project — or two unbound tasks',
       );
     }
   }

@@ -233,37 +233,20 @@ test('task_create with an explicit project mirrors the HTTP API, normalizing tag
   }
 });
 
-test('task_create resolves the project from cwd', async () => {
+test('task_create without a project captures an Unbound task, mirroring the HTTP API', async () => {
   const client = await connectClient();
   try {
-    await client.callTool({
-      name: 'project_create',
-      arguments: { name: 'mcp-cwd', paths: ['/workspace/mcp-cwd/nested'] },
-    });
+    const viaMcp = await mcpCreateTask(client, { title: 'MCP unbound capture' });
+    expect(viaMcp.task).toMatchObject({ projectId: null, projectName: null });
 
-    const task = await mcpCreateTask(client, { title: 'From cwd', cwd: '/workspace/mcp-cwd/nested/deep/file.ts' });
-    expect(task.task.projectName).toBe('mcp-cwd');
-  } finally {
-    await client.close();
-  }
-});
-
-test('task_create without project or cwd returns the same message as the HTTP API', async () => {
-  const client = await connectClient();
-  try {
-    const result = await client.callTool({ name: 'task_create', arguments: { title: 'No scope' } });
-    expect(result.isError).toBe(true);
-    const message = textOf(result);
-    expect(message).toContain('project_create'); // the fix is named
-
-    // Identical message text over HTTP for the same situation.
-    const response = await fetch(`${daemon.baseUrl}/tasks`, {
+    // the same capture over HTTP answers 201 with the identical field values
+    const viaHttp = await fetch(`${daemon.baseUrl}/tasks`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ title: 'No scope either' }),
+      body: JSON.stringify({ title: 'HTTP unbound capture' }),
     });
-    expect(response.status).toBe(404);
-    expect(((await response.json()) as { error: string }).error).toBe(message);
+    expect(viaHttp.status).toBe(201);
+    expect((await viaHttp.json()).task).toMatchObject({ projectId: null, projectName: null });
   } finally {
     await client.close();
   }
@@ -328,19 +311,66 @@ test('task_update rejects an ancestor cycle with the cycle path in the message',
   }
 });
 
-test('task_update rejects project moves', async () => {
+test('task_update {project} cascades over the subtree and mirrors the HTTP API', async () => {
   const client = await connectClient();
   try {
-    const task = await mcpCreateTask(client, { title: 'Restricted', project: 'mcp-tasks' });
+    await client.callTool({
+      name: 'project_create',
+      arguments: { name: 'mcp-move', paths: ['/workspace/mcp-move'] },
+    });
+    const root = await mcpCreateTask(client, { title: 'MCP cascade root' });
+    const child = await mcpCreateTask(client, { title: 'MCP cascade child', parent: root.task.id });
 
-    for (const arguments_ of [{ id: task.task.id, project: 'mcp-cwd' }]) {
-      const result = await client.callTool({ name: 'task_update', arguments: arguments_ });
-      expect(result.isError).toBe(true);
-    }
+    const moved = await client.callTool({ name: 'task_update', arguments: { id: root.task.id, project: 'mcp-move' } });
+    expect(moved.isError).toBeFalsy();
+    expect(jsonOf(moved)).toMatchObject({ task: { id: root.task.id, projectId: expect.any(Number), projectName: 'mcp-move' } });
 
+    // the cascade is visible through the HTTP read surface
+    const response = await fetch(`${daemon.baseUrl}/tasks/${child.task.id}`);
+    expect(response.status).toBe(200);
+    const detail = (await response.json()) as { task: { projectId: number } };
+    const projectId = (jsonOf(moved) as { task: { projectId: number } }).task.projectId;
+    expect(detail.task.projectId).toBe(projectId);
+  } finally {
+    await client.close();
+  }
+});
+
+test('a dependency-splitting move is rejected with the identical message on both surfaces', async () => {
+  const client = await connectClient();
+  try {
+    await client.callTool({
+      name: 'project_create',
+      arguments: { name: 'mcp-move-target', paths: ['/workspace/mcp-move-target'] },
+    });
+    const blocker = await mcpCreateTask(client, { title: 'MCP move blocker' });
+    const root = await mcpCreateTask(client, { title: 'MCP move root', deps: [blocker.task.id] });
+
+    const viaMcp = await client.callTool({
+      name: 'task_update',
+      arguments: { id: root.task.id, project: 'mcp-move-target' },
+    });
+    expect(viaMcp.isError).toBe(true);
+    const message = textOf(viaMcp);
+    expect(message).toContain('cross-project dependencies');
+    expect(message).toContain(
+      `task ${root.task.id} depends on task ${blocker.task.id} (still unbound)`,
+    );
+    expect(message).toContain('resolve them first');
+
+    // the same request over HTTP fails with exactly the same words
+    const viaHttp = await fetch(`${daemon.baseUrl}/tasks/${root.task.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ project: 'mcp-move-target' }),
+    });
+    expect(viaHttp.status).toBe(409);
+    expect(((await viaHttp.json()) as { error: string }).error).toBe(message);
+
+    // status-at-create rejection is still surfaced as a tool error
     const atCreate = await client.callTool({
       name: 'task_create',
-      arguments: { title: 'No status at create', project: 'mcp-tasks', status: 'pending' },
+      arguments: { title: 'No status at create', status: 'pending' },
     });
     expect(atCreate.isError).toBe(true);
     expect(textOf(atCreate)).toContain('status');

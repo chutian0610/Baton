@@ -189,7 +189,9 @@ test('task_annotate rejects an unknown task id and an empty body with tool error
 // ------------------------------------------------------------ change log
 
 test('task creation writes exactly one change-log row with every field as "after" and the http actor', async () => {
+  // capture-first: an unbound create is the norm, and its create diff carries projectId: null
   const task = await makeTask('Created with fields', {
+    project: null,
     tags: ['Audit', 'audit'],
     priority: 'H',
     due: '2026-12-24T00:00:00Z',
@@ -206,7 +208,7 @@ test('task creation writes exactly one change-log row with every field as "after
   expect(change.diff).toEqual({
     title: { before: null, after: 'Created with fields' },
     status: { before: null, after: 'pending' },
-    projectId: { before: null, after: expect.any(Number) },
+    projectId: { before: null, after: null },
     parentId: { before: null, after: null },
     tags: { before: null, after: ['audit'] },
     deps: { before: null, after: [] },

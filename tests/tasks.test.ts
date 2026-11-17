@@ -1,11 +1,19 @@
 import { afterAll, beforeAll, expect, test } from 'vitest';
+import Database from 'better-sqlite3';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { startDaemon, type DaemonHandle } from './helpers/daemon.js';
+import { MIGRATIONS } from '../src/db.js';
 
 /**
- * Process-level tests for the Task HTTP JSON API: creation (project
- * assignment via explicit project or cwd), the single-parent tree (nesting,
- * children summary, reparenting, cycle rejection), field updates, and the
- * error mapping (400 invalid / 404 unknown|unbound / 409 conflict).
+ * Process-level tests for the Task HTTP JSON API: creation (capture-first —
+ * every task starts Unbound; an explicit project assigns, cwd is never
+ * consulted), the single-parent tree (nesting, children summary, reparenting,
+ * ancestor-cycle rejection; trees may span projects), project as an attribute
+ * (task_update {project} cascades over the subtree; moves that would split a
+ * dependency are rejected with the offending pairs), field updates, and the
+ * error mapping (400 invalid / 404 unknown / 409 conflict).
  * Bound paths are plain strings to the daemon — the directories need not
  * exist — so tests use fictional absolute paths.
  */
@@ -103,40 +111,18 @@ test('create accepts a project id instead of a name', async () => {
   expect(task.projectName).toBe('by-id');
 });
 
-test('create resolves the project from cwd via longest-prefix match', async () => {
-  await makeProject('outer', ['/workspace/nest']);
-  await makeProject('inner', ['/workspace/nest/inner']);
+test('create with no project captures an Unbound task; cwd is never consulted', async () => {
+  await makeProject('cwdless', ['/workspace/cwdless']); // the cwd below points INTO this project...
 
-  const deep = await makeTask({ title: 'Deep work', cwd: '/workspace/nest/inner/sub' });
-  expect(deep.projectName).toBe('inner');
-
-  const shallow = await makeTask({ title: 'Shallow work', cwd: '/workspace/nest/other' });
-  expect(shallow.projectName).toBe('outer');
+  const task = await makeTask({ title: 'Captured anywhere', cwd: '/workspace/cwdless/deep' });
+  expect(task.projectId).toBeNull(); // ...and is still ignored: capture is unbound by default
+  expect(task.projectName).toBeNull();
 });
 
-test('explicit project wins over cwd when both are given', async () => {
-  await makeProject('explicit-wins', ['/workspace/explicit']);
-
-  const task = await makeTask({ title: 'Explicit', project: 'explicit-wins', cwd: '/workspace/nest/inner' });
-  expect(task.projectName).toBe('explicit-wins');
-});
-
-test('create with neither project nor cwd answers 404 naming the fix', async () => {
-  const response = await post({ title: 'Nowhere to go' });
-  expect(response.status).toBe(404);
-
-  const body = await json(response);
-  expect(body.error).toContain('project');
-  expect(body.error).toContain('project_create');
-});
-
-test('create with an unbound cwd answers 404 with the resolver message', async () => {
-  const response = await post({ title: 'Unbound', cwd: '/unbound/dir' });
-  expect(response.status).toBe(404);
-
-  const body = await json(response);
-  expect(body.error).toContain('/unbound/dir');
-  expect(body.error).toContain('project_create');
+test('create with project: null also stays Unbound', async () => {
+  const task = await makeTask({ title: 'Explicitly unbound', project: null });
+  expect(task.projectId).toBeNull();
+  expect(task.projectName).toBeNull();
 });
 
 test('unknown explicit project answers 404', async () => {
@@ -183,6 +169,17 @@ test('nesting: a task has one parent; task_get returns direct children ordered b
   // direct children only — the grandchild shows up under its own parent
   const firstDetail = await json(await get(first.id));
   expect(firstDetail.children).toEqual([{ id: grandchild.id, title: 'Grandchild', status: 'pending' }]);
+});
+
+test('an Unbound tree nests and reads like any other tree', async () => {
+  const root = await makeTask({ title: 'Unbound root' });
+  const child = await makeTask({ title: 'Unbound child', parent: root.id });
+  const grandchild = await makeTask({ title: 'Unbound grandchild', parent: child.id });
+
+  expect(child).toMatchObject({ parentId: root.id, projectId: null, projectName: null });
+  const detail = await json(await get(root.id));
+  expect(detail.children).toEqual([{ id: child.id, title: 'Unbound child', status: 'pending' }]);
+  expect((await json(await get(grandchild.id))).task.parentId).toBe(child.id);
 });
 
 test('task_get with an unknown id answers 404', async () => {
@@ -243,19 +240,23 @@ test('a task cannot be its own parent', async () => {
   expect(((await json(response)) as { error: string }).error).toContain('cannot be its own parent');
 });
 
-test('cross-project parents are rejected at create and on reparent', async () => {
-  const home = await makeProject('home', ['/workspace/home']);
+test('parent-child across projects is legal at create and on reparent (trees may span projects)', async () => {
+  await makeProject('home', ['/workspace/home']);
   const away = await makeProject('away', ['/workspace/away']);
   const homeTask = await makeTask({ title: 'Home task', project: 'home' });
 
-  const atCreate = await post({ title: 'Away task', project: 'away', parent: homeTask.id });
-  expect(atCreate.status).toBe(409);
-  expect(((await json(atCreate)) as { error: string }).error).toContain('one project');
+  const atCreate = await makeTask({ title: 'Away child', project: 'away', parent: homeTask.id });
+  expect(atCreate.parentId).toBe(homeTask.id);
+  expect(atCreate.projectName).toBe('away');
 
-  const awayTask = await makeTask({ title: 'Away task', project: 'away' });
-  const onReparent = await patch(awayTask.id, { parent: homeTask.id });
-  expect(onReparent.status).toBe(409);
-  expect(((await json(onReparent)) as { error: string }).error).toContain('one project');
+  // reparenting across projects — including under an Unbound parent — is legal
+  const unboundParent = await makeTask({ title: 'Unbound foster parent' });
+  const onReparent = await json(await patch(atCreate.id, { parent: unboundParent.id }));
+  expect(onReparent.task.parentId).toBe(unboundParent.id);
+  expect(onReparent.task.projectId).toBe(away.id); // the move does not touch the project
+  expect((await json(await get(unboundParent.id))).children).toEqual([
+    { id: atCreate.id, title: 'Away child', status: 'pending' },
+  ]);
 });
 
 test('unknown parent at create answers 404', async () => {
@@ -263,6 +264,137 @@ test('unknown parent at create answers 404', async () => {
   const response = await post({ title: 'Orphan', project: 'orphan', parent: 999999 });
   expect(response.status).toBe(404);
   expect(((await json(response)) as { error: string }).error).toContain('unknown parent task id');
+});
+
+// ------------------------------------- project as an attribute (cascade move)
+
+test('task_update {project} binds the whole subtree in one call; one change-log row per changed task', async () => {
+  const project = await makeProject('bound', ['/workspace/bound']);
+  const root = await makeTask({ title: 'Subtree root' });
+  const child = await makeTask({ title: 'Subtree child', parent: root.id });
+  const grandchild = await makeTask({ title: 'Subtree grandchild', parent: child.id });
+  const outside = await makeTask({ title: 'Outside the subtree' });
+
+  const moved = await json(await patch(root.id, { project: 'bound' }));
+  expect(moved.task).toMatchObject({ id: root.id, projectId: project.id, projectName: 'bound' });
+  for (const id of [child.id, grandchild.id]) {
+    expect((await json(await get(id))).task).toMatchObject({ projectId: project.id, projectName: 'bound' });
+  }
+  expect((await json(await get(outside.id))).task.projectId).toBeNull(); // cascade stops at the subtree
+
+  // provenance: one row per affected task (the projectId diff), one actor
+  for (const id of [root.id, child.id, grandchild.id]) {
+    const changes = (await json(await get(id))).recentChanges;
+    expect(changes[0].diff).toEqual({ projectId: { before: null, after: project.id } });
+    expect(changes[0].actor).toEqual({ kind: 'http' });
+  }
+});
+
+test('re-binding a bound parent re-cascades over descendants created later', async () => {
+  await makeProject('cascade-a', ['/workspace/cascade-a']);
+  const beta = await makeProject('cascade-b', ['/workspace/cascade-b']);
+  const root = await makeTask({ title: 'Cascade root', project: 'cascade-a' });
+  const child = await makeTask({ title: 'Cascade child', parent: root.id }); // Unbound child under a bound parent
+
+  const moved = await json(await patch(root.id, { project: 'cascade-b' }));
+  expect(moved.task.projectId).toBe(beta.id);
+  expect((await json(await get(child.id))).task.projectId).toBe(beta.id);
+});
+
+test('project: null unbinds the whole subtree', async () => {
+  const project = await makeProject('unbind', ['/workspace/unbind']);
+  const root = await makeTask({ title: 'Unbind root', project: 'unbind' });
+  const child = await makeTask({ title: 'Unbind child', project: 'unbind', parent: root.id });
+
+  const moved = await json(await patch(root.id, { project: null }));
+  expect(moved.task).toMatchObject({ projectId: null, projectName: null });
+  expect((await json(await get(child.id))).task).toMatchObject({ projectId: null, projectName: null });
+  expect((await json(await get(root.id))).recentChanges[0].diff).toEqual({
+    projectId: { before: project.id, after: null },
+  });
+});
+
+test('same-value assignment keeps the one-row PATCH convention and leaves descendants alone', async () => {
+  const project = await makeProject('same-value', ['/workspace/same-value']);
+  const root = await makeTask({ title: 'Same value root', project: 'same-value' });
+  const child = await makeTask({ title: 'Same value child', project: 'same-value', parent: root.id });
+
+  const moved = await json(await patch(root.id, { project: 'same-value' }));
+  expect(moved.task.projectId).toBe(project.id);
+  const changes = (await json(await get(root.id))).recentChanges;
+  expect(changes).toHaveLength(2); // create + the no-op PATCH row
+  expect(changes[0].diff).toEqual({}); // the existing one-row PATCH convention
+  expect((await json(await get(child.id))).recentChanges).toHaveLength(1); // only its create row
+});
+
+test('a move that would split a dependency across projects is rejected with the offending pairs', async () => {
+  const here = await makeProject('move-a', ['/workspace/move-a']);
+  await makeProject('move-b', ['/workspace/move-b']);
+  // every edge is legal BEFORE the move: root->outsideDep shares move-a, and
+  // outsideDependent->movedChild pairs two Unbound tasks
+  const outsideDep = await makeTask({ title: 'Outside dependency', project: 'move-a' }); // moved root depends on this
+  const movedRoot = await makeTask({ title: 'Moved root', project: 'move-a', deps: [outsideDep.id] });
+  const movedChild = await makeTask({ title: 'Moved child', parent: movedRoot.id });
+  const outsideDependent = await makeTask({ title: 'Outside dependent', deps: [movedChild.id] });
+
+  const response = await patch(movedRoot.id, { project: 'move-b' });
+  expect(response.status).toBe(409);
+
+  const body = (await json(response)) as { error: string };
+  expect(body.error).toContain('cross-project dependencies');
+  expect(body.error).toContain(
+    `task ${movedRoot.id} depends on task ${outsideDep.id} (still in project ${here.name})`,
+  );
+  expect(body.error).toContain(
+    `task ${outsideDependent.id} (still unbound) depends on task ${movedChild.id}`,
+  );
+  expect(body.error).toContain('resolve them first');
+
+  // rejected means rejected: full rollback, nothing moved
+  expect((await json(await get(movedRoot.id))).task.projectId).toBe(here.id);
+  expect((await json(await get(movedChild.id))).task.projectId).toBeNull();
+  expect((await json(await get(movedRoot.id))).task.deps).toEqual([outsideDep.id]);
+});
+
+test('a legal cascade move keeps intra-subtree dependencies intact', async () => {
+  await makeProject('legal-a', ['/workspace/legal-a']);
+  const target = await makeProject('legal-b', ['/workspace/legal-b']);
+
+  const root = await makeTask({ title: 'Legal moved root', project: 'legal-a' });
+  const child = await makeTask({ title: 'Legal moved child', project: 'legal-a', parent: root.id });
+  const grandchild = await makeTask({ title: 'Legal moved grandchild', project: 'legal-a', parent: child.id });
+  await patch(child.id, { deps: [root.id] }); // edge wholly inside the moved set
+  await patch(grandchild.id, { deps: [child.id, root.id] });
+
+  const moved = await json(await patch(root.id, { project: 'legal-b' }));
+  expect(moved.task.projectId).toBe(target.id);
+  expect((await json(await get(child.id))).task).toMatchObject({ projectId: target.id, deps: [root.id], blocked: true });
+  expect((await json(await get(grandchild.id))).task).toMatchObject({
+    projectId: target.id,
+    deps: [root.id, child.id], // sorted, as deps always read back
+  });
+});
+
+test('project update accepts an id, rejects an unknown project with 404', async () => {
+  await makeProject('by-id-move', ['/workspace/by-id-move']);
+  const task = await makeTask({ title: 'Move me by id' });
+
+  const unknown = await patch(task.id, { project: 'no-such-project' });
+  expect(unknown.status).toBe(404);
+  expect(((await json(unknown)) as { error: string }).error).toContain('unknown project name');
+
+  const byId = await makeProject('by-id-target', ['/workspace/by-id-target']);
+  const moved = await json(await patch(task.id, { project: byId.id }));
+  expect(moved.task.projectId).toBe(byId.id);
+});
+
+test('one PATCH can bind a task and set same-project deps together', async () => {
+  await makeProject('bind-and-dep', ['/workspace/bind-and-dep']);
+  const anchor = await makeTask({ title: 'Bind anchor', project: 'bind-and-dep' });
+  const captor = await makeTask({ title: 'Captured then bound' });
+
+  const updated = await json(await patch(captor.id, { project: 'bind-and-dep', deps: [anchor.id] }));
+  expect(updated.task).toMatchObject({ projectId: anchor.projectId, deps: [anchor.id], blocked: true });
 });
 
 // --------------------------------------------------------- field updates
@@ -323,16 +455,6 @@ test('status cannot be set at create: new tasks start as pending', async () => {
   expect(message).toContain('pending');
 });
 
-test('project moves are rejected', async () => {
-  const project = await makeProject('movable', ['/workspace/movable']);
-  await makeProject('elsewhere', ['/workspace/elsewhere']);
-  const task = await makeTask({ title: 'Movable', project: 'movable' });
-
-  const response = await patch(task.id, { project: 'elsewhere' });
-  expect(response.status).toBe(409);
-  expect(((await json(response)) as { error: string }).error).toContain('not supported');
-});
-
 test('priority must be H, M, or L', async () => {
   const project = await makeProject('priority', ['/workspace/priority']);
 
@@ -375,6 +497,80 @@ test('due and hidden_until must be ISO-8601 strings; tags must be strings', asyn
 test('updating an unknown task id answers 404', async () => {
   const response = await patch(999999, { title: 'Nope' });
   expect(response.status).toBe(404);
+});
+
+// ------------------------------------------------------- schema migration
+
+test('the v6 -> v7 migration rebuilds a real v6 database without losing a row', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'baton-migrate-'));
+  try {
+    // Build a genuine v6 database by applying migrations v1..v6 verbatim.
+    const db = new Database(join(dataDir, 'data.db'));
+    db.pragma('journal_mode = WAL');
+    db.pragma('foreign_keys = ON');
+    for (const migration of MIGRATIONS.filter((entry) => entry.version <= 6)) {
+      db.transaction(() => {
+        migration.up(db);
+        db.pragma(`user_version = ${migration.version}`);
+      })();
+    }
+    db.prepare('INSERT INTO projects (name) VALUES (?)').run('legacy');
+    const legacyProjectId = db.prepare('SELECT id FROM projects').get() as { id: number };
+    db.prepare('INSERT INTO tasks (title, project_id) VALUES (?, ?)').run('Legacy root', legacyProjectId.id);
+    const rootId = (db.prepare('SELECT id FROM tasks WHERE title = ?').get('Legacy root') as { id: number }).id;
+    db.prepare('INSERT INTO tasks (title, project_id, parent_id) VALUES (?, ?, ?)').run(
+      'Legacy child',
+      legacyProjectId.id,
+      rootId,
+    );
+    const childId = (db.prepare('SELECT id FROM tasks WHERE title = ?').get('Legacy child') as { id: number }).id;
+    db.prepare('INSERT INTO task_tags (task_id, tag) VALUES (?, ?)').run(childId, 'kept');
+    db.prepare('INSERT INTO task_deps (task_id, depends_on) VALUES (?, ?)').run(childId, rootId);
+    const seqBefore = (db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'tasks'").get() as { seq: number }).seq;
+    db.close();
+
+    // Opening through the daemon applies v7 on top; every row must survive.
+    const migrated = await startDaemon({ dataDir });
+    const migratedUrl = migrated.baseUrl;
+    const readTask = async (id: number): Promise<any> => {
+      const response = await fetch(`${migratedUrl}/tasks/${id}`);
+      expect(response.status).toBe(200);
+      return (await response.json()) as any;
+    };
+    try {
+      const root = await readTask(rootId);
+      expect(root.task).toMatchObject({
+        id: rootId,
+        title: 'Legacy root',
+        projectId: legacyProjectId.id,
+        projectName: 'legacy',
+        parentId: null,
+      });
+      const child = await readTask(childId);
+      expect(child.task).toMatchObject({
+        title: 'Legacy child',
+        projectId: legacyProjectId.id,
+        parentId: rootId,
+        tags: ['kept'],
+        deps: [rootId],
+      });
+
+      // The store is fully live on v7: capture works, ids continue.
+      const captureResponse = await fetch(`${migratedUrl}/tasks`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ title: 'Post-migration capture' }),
+      });
+      expect(captureResponse.status).toBe(201);
+      const captured = (await captureResponse.json()).task;
+      expect(captured.projectId).toBeNull();
+      expect(captured.id).toBeGreaterThan(seqBefore);
+    } finally {
+      await migrated.stop({ keepDataDir: true });
+    }
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
 });
 
 // ------------------------------------------------------------ plumbing
