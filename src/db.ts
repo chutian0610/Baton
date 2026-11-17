@@ -16,6 +16,13 @@ export interface Migration {
   version: number;
   name: string;
   up: (db: Db) => void;
+  /**
+   * Set when the migration rebuilds a table other tables reference by foreign
+   * key: foreign key enforcement is switched off for the whole migration run
+   * (PRAGMA foreign_keys cannot change inside a transaction) and re-enabled
+   * afterwards, with a foreign_key_check guarding the result.
+   */
+  rebuildsReferencedTable?: boolean;
 }
 
 export const MIGRATIONS: readonly Migration[] = [
@@ -158,6 +165,55 @@ export const MIGRATIONS: readonly Migration[] = [
       `);
     },
   },
+  {
+    version: 7,
+    name: 'unbound-tasks',
+    up: (db) => {
+      // ADR-0005: Project is a Task attribute, not a container. tasks.project_id
+      // becomes nullable — every task may start Unbound — via the standard
+      // SQLite table rebuild (create new, copy, drop, rename). Data, the
+      // projects foreign key, both indexes, and the AUTOINCREMENT counter are
+      // preserved; rows keep their project ids exactly as stored. The rebuild
+      // needs foreign key enforcement off (see rebuildsReferencedTable /
+      // migrate), and a foreign_key_check below guards the result before the
+      // transaction commits.
+      const seqRow = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'tasks'").get() as
+        | { seq: number }
+        | undefined;
+      db.exec(`
+        CREATE TABLE tasks_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'active', 'waiting', 'done', 'dropped')),
+          project_id INTEGER REFERENCES projects(id),
+          parent_id INTEGER REFERENCES tasks(id),
+          due TEXT,
+          priority TEXT CHECK (priority IS NULL OR priority IN ('H', 'M', 'L')),
+          effort TEXT,
+          hidden_until TEXT,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+          updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );
+        INSERT INTO tasks_new (id, title, status, project_id, parent_id, due, priority, effort, hidden_until, created_at, updated_at)
+          SELECT id, title, status, project_id, parent_id, due, priority, effort, hidden_until, created_at, updated_at FROM tasks;
+        DROP TABLE tasks;
+        ALTER TABLE tasks_new RENAME TO tasks;
+        CREATE INDEX idx_tasks_project ON tasks(project_id);
+        CREATE INDEX idx_tasks_parent ON tasks(parent_id);
+      `);
+      // DROP TABLE removed the old AUTOINCREMENT bookkeeping; restore the
+      // counter so ids keep increasing across the rebuild.
+      if (seqRow !== undefined) {
+        db.prepare("DELETE FROM sqlite_sequence WHERE name = 'tasks'").run();
+        db.prepare("INSERT INTO sqlite_sequence (name, seq) VALUES ('tasks', ?)").run(seqRow.seq);
+      }
+      const violations = db.pragma('foreign_key_check') as unknown[][]; // empty = every reference resolves
+      if (violations.length > 0) {
+        throw new Error(`migration v7 produced foreign key violations: ${JSON.stringify(violations.slice(0, 5))}`);
+      }
+    },
+    rebuildsReferencedTable: true,
+  },
 ];
 
 /** Opens (creating if needed) `<dataDir>/data.db` and brings its schema to the latest version. */
@@ -174,11 +230,29 @@ export function openDatabase(dataDir: string): Db {
 export function migrate(db: Db): void {
   const applied = schemaVersion(db);
   const pending = [...MIGRATIONS].sort((a, b) => a.version - b.version).filter((m) => m.version > applied);
-  for (const migration of pending) {
-    db.transaction(() => {
-      migration.up(db);
-      db.pragma(`user_version = ${migration.version}`);
-    })();
+  if (pending.length === 0) {
+    return;
+  }
+  // A table rebuild that other tables reference by foreign key cannot run
+  // with enforcement on (the PRAGMA is a no-op inside a transaction), so
+  // enforcement is switched off for the whole run — each migration still
+  // commits atomically — and re-enabled afterwards; the rebuild itself runs
+  // PRAGMA foreign_key_check before committing.
+  const rebuilds = pending.some((migration) => migration.rebuildsReferencedTable === true);
+  if (rebuilds) {
+    db.pragma('foreign_keys = OFF');
+  }
+  try {
+    for (const migration of pending) {
+      db.transaction(() => {
+        migration.up(db);
+        db.pragma(`user_version = ${migration.version}`);
+      })();
+    }
+  } finally {
+    if (rebuilds) {
+      db.pragma('foreign_keys = ON');
+    }
   }
 }
 

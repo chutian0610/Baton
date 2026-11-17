@@ -1,6 +1,6 @@
 {
   "name": "baton",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A single-machine task management MCP daemon for AI coding agents",
   "type": "module",
   "license": "UNLICENSED",

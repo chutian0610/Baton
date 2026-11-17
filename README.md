@@ -1,10 +1,10 @@
 # Baton
 
-Baton gives every AI coding-agent session on one machine a shared, durable task board. A single daemon, bound to `127.0.0.1` only, serves a plain HTTP JSON API as its core and a thin MCP adapter (streamable HTTP) on top, so several agent sessions — and a terminal with `curl` — all read and write the same store. Tasks nest as a single-parent tree, ordering is a dependency DAG, Projects bind to local paths, and every change is recorded in an append-only change log with the client that made it. All state lives in one SQLite database under `~/.baton/`.
+Baton gives every AI coding-agent session on one machine a shared, durable task board. A single daemon, bound to `127.0.0.1` only, serves a plain HTTP JSON API as its core and a thin MCP adapter (streamable HTTP) on top, so several agent sessions — and a terminal with `curl` — all read and write the same store. Capture-first: every task starts Unbound, and binding it to a Project is an explicit, subtree-wide act. Tasks nest as a single-parent tree (across Projects freely), ordering is a dependency DAG within a board's scope, and every change is recorded in an append-only change log with the client that made it. All state lives in one SQLite database under `~/.baton/`.
 
 - **Domain glossary (normative)**: `CONTEXT.md`
 - **Architecture decisions**: `docs/adr/`
-- **Spec**: GitHub issue #1
+- **Specs**: GitHub issues #1 (v1) and #12 (v0.2 capture-first)
 
 ## Install
 
@@ -87,11 +87,12 @@ The same core the MCP tools wrap, curl-friendly:
 | `POST /projects` | create a Project (name + bound paths) |
 | `GET /projects` | list Projects with paths and open-task counts |
 | `GET /projects/current?cwd=…` | resolve a working directory to the Current Project |
-| `POST /tasks` | create a Task (explicit project, or resolved from `cwd`) |
-| `GET /tasks?view=…&cwd=…` | quick view (`current`, `today`, `blocked`, `all`) |
-| `GET /tasks?filter=…&cwd=…` | structured JSON filter (URL-encoded) |
+| `POST /tasks` | create a Task (capture-first: no project needed; `project` optional, absent/null = Unbound) |
+| `GET /tasks` | default listing: global open tasks (`{tasks}`) |
+| `GET /tasks?view=…` | quick view (`current`, `today`, `blocked`, `all`); `current` also takes `?cwd=` |
+| `GET /tasks?filter=…` | structured JSON filter (URL-encoded; `project` narrows to one board) |
 | `GET /tasks/:id` | full detail: task + children + intervals + annotations + changes |
-| `PATCH /tasks/:id` | update fields, reparent, set deps, change status |
+| `PATCH /tasks/:id` | update fields, reparent, set deps, change status, bind/unbind the Project (cascades to the subtree) |
 | `POST /tasks/:id/start` | start verb (`pending|waiting → active`) |
 | `POST /tasks/:id/done` | done verb (any non-done → `done`) |
 | `POST /tasks/:id/annotations` | append an Annotation |
@@ -106,17 +107,43 @@ curl -s -X POST http://127.0.0.1:7600/projects \
   -d '{"name":"my-app","paths":["/path/to/my-app"]}'
 ```
 
-Create a Task from an agent's working directory (the `cwd` resolves to the Current Project):
+Capture a task from anywhere — no Project needed (every task starts Unbound, and `cwd` is never consulted at create):
 
 ```sh
 curl -s -X POST http://127.0.0.1:7600/tasks \
   -H 'content-type: application/json' \
-  -d '{"title":"Ship the release","cwd":"/path/to/my-app"}'
+  -d '{"title":"Ship the release"}'
 ```
 
-List the Current Project's open work:
+Capture can also nest (trees may span Projects), and assignment is a conscious act when the user names a Project:
 
 ```sh
+curl -s -X POST http://127.0.0.1:7600/tasks \
+  -H 'content-type: application/json' \
+  -d '{"title":"Draft the changelog","parent":1}'
+curl -s -X POST http://127.0.0.1:7600/tasks \
+  -H 'content-type: application/json' \
+  -d '{"title":"Repo-only chore","project":"my-app"}'
+```
+
+Bind later in one call: `PATCH {project}` assigns the task AND its whole subtree (one change-log row per affected task). `{"project": null}` unbinds the subtree:
+
+```sh
+curl -s -X PATCH http://127.0.0.1:7600/tasks/1 \
+  -H 'content-type: application/json' \
+  -d '{"project":"my-app"}'
+```
+
+The default listing is global open tasks — captured Unbound work is always visible:
+
+```sh
+curl -s http://127.0.0.1:7600/tasks
+```
+
+Work one board at a time via the `project` filter (name or id), or keep repo-scoped reading with `view=current`:
+
+```sh
+curl -s 'http://127.0.0.1:7600/tasks?filter=%7B%22project%22%3A%22my-app%22%7D'
 curl -s 'http://127.0.0.1:7600/tasks?view=current&cwd=/path/to/my-app'
 ```
 
@@ -213,8 +240,11 @@ Restoring is putting the file back and starting the daemon.
 Short version — `CONTEXT.md` is the normative glossary:
 
 - **Task** — a unit of work with a Status; nests into a single-parent tree (a milestone is just a parent Task)
-- **Project** — a grouping of Tasks bound to one or more local paths
-- **Current Project** — the Project resolved from the caller's working directory
+- **Unbound** — the state every Task starts in: its Project attribute is unset (`projectId: null`). `task_create` never consults `cwd` and never fails on project grounds — capture now, organize later. Unbound tasks nest and depend among themselves like any other tasks
+- **Project** — an attribute of a Task, not a container: at most one Project per Task, assigned explicitly (by name or id at create) or bound later with `PATCH {project}`. Assigning a Project to a Task assigns it to that Task's **whole subtree** — the default cascade; there is no single-task reassignment without the cascade. Trees may span Projects (decomposition is project-independent). A Project may also be bound to one or more local paths for `view=current` and `project_current` resolution
+- **Current Project** — the Project resolved from the caller's working directory; `view=current` keeps this repo-scoped read (with a whole-store fallback note when the cwd resolves to nothing). Writes never resolve `cwd`
+- **Dependency** — a directed "cannot start until done" edge, orthogonal to Parent/Child. One project constraint survives: dependencies connect tasks of the **same Project — or two Unbound tasks**; a move that would leave a cross-project dependency is rejected with the offending pairs listed
+- **Parent / Child** — the single-parent nesting relationship; may span Projects freely
 - **Tag** — a free-form lowercase label for cross-project grouping
 - **Status** — `pending / active / waiting / done / dropped`, with validated transitions
 - **Interval** — an automatically recorded span of a Task being active

@@ -22,10 +22,7 @@ import type { Db } from './db.js';
  *
  * Input schemas deliberately stay type-shaped (e.g. priority is a plain
  * string) instead of encoding domain rules: those checks live in the core
- * layer so MCP tool errors and HTTP error bodies share the same text. The
- * not-yet-supported argument (project-on-update) IS declared
- * so it reaches the core layer, which rejects it with a clear message
- * instead of zod silently stripping it.
+ * layer so MCP tool errors and HTTP error bodies share the same text.
  *
  * Actor recording (spec "Actor recording"): every mutating tool passes the
  * MCP actor — the handshake's clientInfo via `mcp.server.getClientVersion()`
@@ -37,7 +34,7 @@ import type { Db } from './db.js';
  * transport); the Db handle is shared across sessions and owned by the daemon.
  */
 export function buildMcpServer(db: Db): McpServer {
-  const mcp = new McpServer({ name: 'baton', version: '0.1.0' });
+  const mcp = new McpServer({ name: 'baton', version: '0.2.0' });
 
   /** The MCP actor for a request: clientInfo from the handshake + session id when the transport has one. */
   const mcpActor = (sessionId?: string): Actor => {
@@ -95,11 +92,13 @@ export function buildMcpServer(db: Db): McpServer {
     {
       title: 'Create task',
       description:
-        'Create a Task with a title plus optional parent/project/tags/deps/due/priority/effort/hidden_until/cwd. ' +
-        'The owning project comes from an explicit project (name or id), which wins, or from cwd via ' +
-        "longest-prefix match over the projects' bound paths; passing neither (or an unbound cwd) errors. " +
-        'A parent must be a task in the same project — a task tree lives inside one project. ' +
-        'deps name tasks this task depends on; each must exist and belong to the same project (dependencies never cross projects). ' +
+        'Capture-first: create a Task with a title plus optional parent/project/tags/deps/due/priority/effort/hidden_until. ' +
+        'Every task starts Unbound (projectId null): the caller\'s cwd is never consulted and creation never fails on ' +
+        'project grounds. Pass an explicit project (name or id) to assign the attribute at birth; leave it out to ' +
+        'capture now and bind later with task_update {project} (which cascades to the whole subtree). ' +
+        'A parent must exist and may live in another project — trees express decomposition, not organization. ' +
+        'deps name tasks this task depends on; each must exist and satisfy the one project constraint: ' +
+        'dependencies connect tasks of the same project — or two Unbound tasks. ' +
         'New tasks start pending: status at create is rejected (use task_update, task_start, or task_done to move it). ' +
         'Tags are normalized to lowercase and deduplicated.',
       inputSchema: {
@@ -107,18 +106,19 @@ export function buildMcpServer(db: Db): McpServer {
         project: z
           .union([z.string(), z.number().int()])
           .optional()
-          .describe('explicit project name or id; wins over cwd when both are given'),
-        parent: z.number().int().optional().describe('id of the parent task (same project)'),
+          .describe('explicit project name or id; defaults to unbound (capture now, bind later with task_update)'),
+        parent: z.number().int().optional().describe('id of the parent task (may be in another project)'),
         tags: z.array(z.string()).optional().describe('lowercased and deduplicated on save'),
         deps: z
           .array(z.number().int())
           .optional()
-          .describe('ids of tasks this task depends on (same project only); sorted and deduplicated on save'),
+          .describe(
+            'ids of tasks this task depends on (same project, or this task and the dependency both Unbound); sorted and deduplicated on save',
+          ),
         due: z.string().optional().describe('ISO-8601 date or datetime'),
         priority: z.string().optional().describe('one of "H", "M", "L"'),
         effort: z.string().optional().describe('free-text effort estimate'),
         hidden_until: z.string().optional().describe('ISO-8601 datetime; hides the task from default views until then'),
-        cwd: z.string().optional().describe("caller's working directory; resolved to the Current Project when no explicit project is given"),
         status: z.unknown().optional().describe('not supported yet: new tasks start pending (lifecycle changes come later)'),
       },
     },
@@ -150,21 +150,23 @@ export function buildMcpServer(db: Db): McpServer {
       title: 'List tasks',
       description:
         'List tasks through the query model: a quick view (view: "current" | "today" | "blocked" | "all") ' +
-        'OR a structured filter (the filter fields below, combined with AND), plus an optional cwd. ' +
-        'current = open tasks of the cwd-resolved Current Project; today = open tasks due today or overdue; ' +
-        'blocked = open and blocked; all = everything with no default exclusions. ' +
+        'OR a structured filter (the filter fields below, combined with AND). ' +
+        'The DEFAULT listing is global: open tasks across every project, Unbound ones included; ' +
+        'an explicit project (name or id) narrows it to one board. ' +
+        'current = open tasks of the cwd-resolved Current Project (the one read that consults cwd; ' +
+        'when the cwd resolves to nothing the whole store is listed and the response carries a note); ' +
+        'today = open tasks due today or overdue; blocked = open and blocked; ' +
+        'all = everything with no default exclusions. ' +
         'Every view and filter except "all" (and any filter naming statuses) excludes done, dropped, and ' +
         'tasks whose hidden_until is still in the future; naming statuses explicitly (e.g. status: "done") ' +
         'returns exactly those. Default ordering: due ascending (no due last) -> priority descending ' +
         '(H > M > L, none last) -> id ascending; sort and limit override (sort entries are field names or ' +
         '{field, direction} with direction "asc"|"desc"). ' +
-        'Scope: an explicit project wins; otherwise a resolvable cwd scopes the query to that project; ' +
-        'an absent or unbound cwd lists the whole store with a note in scope.note. ' +
-        'The response is {tasks: [task views], scope: {project: {id, name} | null, note?}} — ' +
+        'The response is {tasks: [task views]} — plus note only in the view=current cwd fallback — ' +
         'identical to GET /tasks on the HTTP API.',
       inputSchema: {
         view: z.string().optional().describe('quick view: "current", "today", "blocked", or "all"'),
-        cwd: z.string().optional().describe("caller's working directory; scopes the query to the Current Project it resolves to"),
+        cwd: z.string().optional().describe("caller's working directory; only view=current consults it (resolves the Current Project)"),
         status: z.union([z.string(), z.array(z.string())]).optional().describe('status or array of statuses ("pending", "active", "waiting", "done", "dropped")'),
         project: z.union([z.string(), z.number()]).optional().describe('project name or id; wins over cwd'),
         tags: z.array(z.string()).optional().describe('tags the tasks must carry (lowercased before matching)'),
@@ -211,17 +213,20 @@ export function buildMcpServer(db: Db): McpServer {
       title: 'Update task',
       description:
         'Update a task: title, tags (replaces the set), due, priority, effort, hidden_until, parent ' +
-        '(reparenting within the same project; parent: null makes the task a root), and deps ' +
-        '(replaces the dependency set; deps: null or [] clears it). Dependencies must reference tasks in the ' +
-        'same project, cannot include the task itself, and must keep the graph a DAG — cycle-forming dep sets ' +
-        'are rejected with the offending path. ' +
+        '(reparenting across projects is legal; parent: null makes the task a root), deps ' +
+        '(replaces the dependency set; deps: null or [] clears it), and project (the attribute move: ' +
+        'a name or id binds the task AND its whole subtree in one cascade; null unbinds the subtree — ' +
+        'single-task reassignment without the cascade is not expressible). ' +
+        'Dependencies must satisfy the same-project-or-two-unbound rule against the post-update project, ' +
+        'cannot include the task itself, and must keep the graph a DAG — cycle-forming dep sets are ' +
+        'rejected with the offending path. ' +
         'Ancestor-cycle reparenting is rejected with the cycle path. ' +
+        'A project move that would leave a cross-project dependency is rejected with the offending pairs listed. ' +
         'A provided status goes through the status machine: legal moves only — ' +
         'start (pending|waiting -> active), waiting (pending|active -> waiting), done (any non-done), ' +
         'drop (any non-dropped), reopen (done|dropped -> pending); same-status moves are rejected. ' +
         'Entering active opens an Interval, leaving active (or entering done/dropped) closes it. ' +
-        'Passing null clears an optional field; omitting a field leaves it unchanged. ' +
-        'Not supported and rejected: project moves.',
+        'Passing null clears an optional field; omitting a field leaves it unchanged.',
       inputSchema: {
         id: z.number().int().describe('task id'),
         title: z.string().optional(),
@@ -230,7 +235,9 @@ export function buildMcpServer(db: Db): McpServer {
           .array(z.number().int())
           .nullable()
           .optional()
-          .describe('full replacement dependency set (task ids, same project only); null or [] clears'),
+          .describe(
+            'full replacement dependency set (task ids: same project as this task, or both Unbound); null or [] clears',
+          ),
         due: z.string().nullable().optional().describe('ISO-8601 date or datetime; null clears'),
         priority: z.string().nullable().optional().describe('one of "H", "M", "L"; null clears'),
         effort: z.string().nullable().optional().describe('free-text estimate; null clears'),
@@ -240,14 +247,20 @@ export function buildMcpServer(db: Db): McpServer {
           .int()
           .nullable()
           .optional()
-          .describe('new parent task id (same project); null makes this task a root'),
+          .describe('new parent task id (may be in another project); null makes this task a root'),
         status: z
           .string()
           .optional()
           .describe(
             'target status ("pending", "active", "waiting", "done", "dropped"); validated against the status machine — illegal moves are rejected',
           ),
-        project: z.unknown().optional().describe('not supported: moving a task between projects is rejected'),
+        project: z
+          .union([z.string(), z.number().int()])
+          .nullable()
+          .optional()
+          .describe(
+            'project name or id: binds this task AND its whole subtree (one cascade, one change-log row per affected task); null unbinds the subtree',
+          ),
       },
     },
     async ({ id, ...fields }, extra) => runTool(() => ({ task: updateTask(db, id, fields, mcpActor(extra.sessionId)) })),

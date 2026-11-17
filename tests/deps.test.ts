@@ -7,12 +7,12 @@ import { startDaemon, type DaemonHandle } from './helpers/daemon.js';
 /**
  * Process-level tests for the Dependency DAG (T5): deps as a replaced set on
  * create/update, the DAG rules (self-edges, cycles with the offending path,
- * cross-project edges all rejected), and the two read-time derivations of
- * ADR-0003 — blocked (any open dependency; advisory, never gates start) and
- * progress (done descendants ÷ non-dropped descendants; null when there is
- * nothing below the task). Chain and diamond graph shapes are covered, the
- * change-log diff for deps mutations, and the MCP surface mirrors HTTP for
- * add + cycle rejection (same message text).
+ * edges violating the same-project-or-two-unbound rule all rejected), and the
+ * two read-time derivations of ADR-0003 — blocked (any open dependency;
+ * advisory, never gates start) and progress (done descendants ÷ non-dropped
+ * descendants; null when there is nothing below the task). Chain and diamond
+ * graph shapes are covered, the change-log diff for deps mutations, and the
+ * MCP surface mirrors HTTP for add + cycle rejection (same message text).
  */
 let daemon: DaemonHandle;
 
@@ -183,7 +183,7 @@ test('a transitive cycle is rejected with the full path', async () => {
   expect(message).toContain(`${three.id} -> ${five.id} -> ${four.id} -> ${three.id}`);
 });
 
-test('cross-project dependencies are rejected at create and on update', async () => {
+test('cross-project dependencies are rejected at create and on update (same-project-or-both-unbound)', async () => {
   await makeProject('board-a');
   await makeProject('board-b');
   const here = await makeTask({ title: 'Here', project: 'board-a' });
@@ -191,11 +191,45 @@ test('cross-project dependencies are rejected at create and on update', async ()
 
   const atCreate = await post({ title: 'Cross at create', project: 'board-a', deps: [there.id] });
   expect(atCreate.status).toBe(409);
-  expect(await errorOf(atCreate)).toContain('one project');
+  const createMessage = await errorOf(atCreate);
+  expect(createMessage).toContain('project board-b');
+  expect(createMessage).toContain('same project');
+  expect(createMessage).toContain('two unbound');
 
   const onUpdate = await patch(here.id, { deps: [there.id] });
   expect(onUpdate.status).toBe(409);
-  expect(await errorOf(onUpdate)).toContain('one project');
+  const updateMessage = await errorOf(onUpdate);
+  expect(updateMessage).toContain(`task ${here.id} belongs to project board-a`);
+  expect(updateMessage).toContain('same project');
+  expect(updateMessage).toContain('two unbound');
+});
+
+test('Unbound tasks may depend on each other and form graphs', async () => {
+  const a = await makeTask({ title: 'Unbound A' });
+  const b = await makeTask({ title: 'Unbound B', deps: [a.id] });
+  const c = await makeTask({ title: 'Unbound C', deps: [a.id, b.id] });
+
+  expect((await detail(c.id)).task).toMatchObject({ projectId: null, deps: [a.id, b.id], blocked: true });
+  expect((await detail(b.id)).task).toMatchObject({ projectId: null, deps: [a.id], blocked: true });
+  expect((await detail(a.id)).task).toMatchObject({ projectId: null, deps: [], blocked: false });
+});
+
+test('unbound-to-projected dependencies are illegal in both directions', async () => {
+  await makeProject('half-bound');
+  const unbound = await makeTask({ title: 'Unbound side' });
+  const bound = await makeTask({ title: 'Bound side', project: 'half-bound' });
+
+  const unboundFirst = await patch(unbound.id, { deps: [bound.id] });
+  expect(unboundFirst.status).toBe(409);
+  const message = await errorOf(unboundFirst);
+  expect(message).toContain(`task ${unbound.id} is unbound`);
+  expect(message).toContain(`dependency task ${bound.id} belongs to project half-bound`);
+
+  const boundFirst = await patch(bound.id, { deps: [unbound.id] });
+  expect(boundFirst.status).toBe(409);
+  const reverse = await errorOf(boundFirst);
+  expect(reverse).toContain(`dependency task ${unbound.id} is unbound`);
+  expect(reverse).toContain(`task ${bound.id} belongs to project half-bound`);
 });
 
 test('chains and diamonds stay legal; a cycle through the diamond reports its path', async () => {

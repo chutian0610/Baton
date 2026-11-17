@@ -21,9 +21,11 @@ import type { Db } from './db.js';
  *   POST /projects                -> 201 project (name + bound paths)
  *   GET  /projects                -> 200 all projects with paths + open-task counts
  *   GET  /projects/current        -> 200 resolve ?cwd= to the Current Project
- *   POST /tasks                   -> 201 task (project explicit or resolved from cwd)
- *   GET  /tasks                   -> 200 {tasks, scope} (query: ?view= quick view or
- *                                    ?filter= URL-encoded JSON filter, plus optional ?cwd=)
+ *   POST /tasks                   -> 201 task (project optional; capture-first,
+ *                                    absent/null leaves the task Unbound)
+ *   GET /tasks                    -> 200 {tasks, note?} (query: ?view= quick view or
+ *                                    ?filter= URL-encoded JSON filter, plus optional
+ *                                    ?cwd= — consulted only by view=current)
  *   GET  /tasks/:id               -> 200 task + children + intervals + annotations + recent changes
  *   PATCH /tasks/:id              -> 200 updated task (fields/reparent; status via the machine)
  *   POST /tasks/:id/start         -> 200 task (start verb: pending|waiting -> active)

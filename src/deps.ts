@@ -4,11 +4,11 @@ import { TaskError } from './tasks.js';
 
 /**
  * The Dependency DAG (CONTEXT.md: Dependency; ADR-0004: deps are directed
- * edges orthogonal to the parent/child tree; a project is a self-contained
- * board, so edges stay inside one project). This module owns everything about
- * dependency edges and the two values derived from structure (ADR-0003:
- * derived data is never stored — there is no blocked column and no percent
- * field anywhere):
+ * edges orthogonal to the parent/child tree; ADR-0005: the one project
+ * constraint — edges connect same-project tasks, or two Unbound tasks). This
+ * module owns everything about dependency edges and the two values derived
+ * from structure (ADR-0003: derived data is never stored — there is no
+ * blocked column and no percent field anywhere):
  *
  * - deps are a SET on the task, replaced wholesale by task_update (like tags);
  * - Blocked: true while any dependency is neither done nor dropped; advisory
@@ -81,36 +81,36 @@ export function deriveProgress(db: Db, taskId: number): number | null {
 /**
  * Validates a proposed dependency set for a task being created (taskId
  * undefined — the task does not exist yet) or updated: every dependency must
- * exist and belong to the same project (edges never cross projects), and a
- * task cannot depend on itself. Cycles are checked separately
+ * exist, a task cannot depend on itself, and the one surviving project
+ * constraint (ADR-0005) holds — dependencies connect tasks of the same
+ * project, or two Unbound tasks. `projectId` is the task's project AFTER the
+ * write (null = Unbound). Cycles are checked separately
  * (findDependencyCyclePath) since only updates can form them.
  */
 export function validateDeps(
   db: Db,
   taskId: number | undefined,
-  projectId: number,
+  projectId: number | null,
   deps: number[],
 ): void {
   const findTask = db.prepare('SELECT id, project_id FROM tasks WHERE id = ?');
+  const findName = db.prepare('SELECT name FROM projects WHERE id = ?');
+  const describe = (id: number | null): string =>
+    id === null ? 'is unbound' : `belongs to project ${(findName.get(id) as { name: string }).name}`;
   for (const dep of deps) {
     if (taskId !== undefined && dep === taskId) {
       throw new TaskError('conflict', `task ${taskId} cannot depend on itself`);
     }
-    const row = findTask.get(dep) as { id: number; project_id: number } | undefined;
+    const row = findTask.get(dep) as { id: number; project_id: number | null } | undefined;
     if (row === undefined) {
       throw new TaskError('not-found', `unknown dependency task id: ${dep}`);
     }
     if (row.project_id !== projectId) {
-      const depProject = db.prepare('SELECT name FROM projects WHERE id = ?').get(row.project_id) as {
-        name: string;
-      };
-      const ownProject = db.prepare('SELECT name FROM projects WHERE id = ?').get(projectId) as {
-        name: string;
-      };
+      const who = taskId === undefined ? 'the new task' : `task ${taskId}`;
       throw new TaskError(
         'conflict',
-        `dependency task ${dep} belongs to project ${depProject.name}, but ${taskId === undefined ? 'the new task' : `task ${taskId}`} would belong to project ${ownProject.name}; ` +
-          'dependencies must stay inside one project (a project is a self-contained board)',
+        `dependency task ${dep} ${describe(row.project_id)}, but ${who} ${describe(projectId)}; ` +
+          'dependencies must connect tasks of the same project — or two unbound tasks',
       );
     }
   }

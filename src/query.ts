@@ -21,10 +21,15 @@ import {
  * derived data is never stored — filtering and sorting on `blocked` derives
  * it too).
  *
- * Rules both surfaces share:
- * - Quick views: `current` (open tasks of the resolved Current Project),
- *   `today` (open tasks due today or overdue, i.e. due <= end of today),
- *   `blocked` (open AND blocked), `all` (everything — the whole store).
+ * Rules both surfaces share (capture-first, ADR-0005):
+ * - The DEFAULT listing is GLOBAL: open tasks across every project, Unbound
+ *   ones included. An explicit filter `project` (name or id) narrows it to
+ *   one board.
+ * - Quick views: `current` (open tasks of the cwd-resolved Current Project —
+ *   the one read that still consults cwd, with the whole-store fallback note
+ *   when the cwd resolves to nothing), `today` (open tasks due today or
+ *   overdue, i.e. due <= end of today), `blocked` (open AND blocked), `all`
+ *   (everything — the whole store).
  * - Default exclusions, applied to every view and bare filter EXCEPT `all`
  *   and any filter that explicitly names statuses: exclude done, dropped,
  *   and tasks whose hidden_until is still in the future.
@@ -32,11 +37,10 @@ import {
  *   priority descending (H > M > L, tasks without priority last) -> id
  *   ascending. An explicit sort/limit overrides; id ascending always stays
  *   the final tiebreaker so ordering is stable.
- * - Scope: an explicit filter `project` wins (like task_create); otherwise a
- *   resolvable cwd scopes non-`all` queries to the Current Project; an absent
- *   or unbound cwd falls back to the WHOLE store with a note in the response
- *   scope (spec: "task_list without resolvable cwd falls back to whole-store
- *   with a note"). `all` is the whole store by definition.
+ * - cwd narrowing is gone: a cwd is consulted only by `view=current`. The
+ *   response payload is `{tasks}` — plus a `note` ONLY in the view=current
+ *   fallback case (absent or unresolvable cwd). There is no Inbox view and
+ *   no hasProject filter.
  *
  * Read-path scale note: candidates are assembled into full TaskViews (tags,
  * deps, blocked, progress) and filtered in memory. On a single machine's
@@ -65,17 +69,14 @@ export const FILTER_FIELD_KEYS = [
   'limit',
 ] as const;
 
-/** The scope a list result was computed over. */
-export interface QueryScope {
-  /** The project the query was scoped to, or null when it ran over the whole store. */
-  project: { id: number; name: string } | null;
-  /** Present when the query fell back to the whole store (absent/unresolvable cwd). */
-  note?: string;
-}
-
 export interface TaskQueryResult {
   tasks: TaskView[];
-  scope: QueryScope;
+  /**
+   * Present ONLY when view=current was asked and the cwd resolved to nothing
+   * (absent or unbound): the whole store was listed instead. Normal
+   * responses carry exactly `{tasks}`.
+   */
+  note?: string;
 }
 
 /** tag_list's answer: every tag in use with the count of tasks carrying it (all statuses). */
@@ -145,10 +146,10 @@ const DEFAULT_SORT: SortSpec[] = [
 /**
  * Runs the shared list query. `input` is `{view?, filter?, cwd?}`: either a
  * quick view name or a structured filter object (both is an error), plus an
- * optional cwd. Neither view nor filter means the default view (`current`
- * semantics: default exclusions, scoped to the cwd's Current Project with the
- * whole-store fallback). Domain failures throw TaskError (`invalid` for
- * malformed input, `not-found` for unknown project/parent references).
+ * optional cwd. Neither view nor filter means the default view: GLOBAL open
+ * tasks (the default exclusions, no scoping). Domain failures throw TaskError
+ * (`invalid` for malformed input, `not-found` for unknown project/parent
+ * references).
  */
 export function queryTasks(db: Db, input: unknown): TaskQueryResult {
   const body = asBody(input);
@@ -163,7 +164,29 @@ export function queryTasks(db: Db, input: unknown): TaskQueryResult {
   const now = Date.now();
   const endOfToday = endOfTodayMs(now);
 
-  const { projectId, scope } = resolveQueryScope(db, effectiveView, filter, cwd);
+  // Scope (ADR-0005): an explicit filter project narrows the global default;
+  // view=current resolves the cwd to the Current Project — the one read that
+  // still consults cwd, falling back to the whole store with a note when the
+  // cwd is absent or unbound. Everything else is global.
+  let projectId: number | null = null;
+  let note: string | undefined;
+  if (filter?.project !== undefined) {
+    projectId = findProject(db, filter.project).id;
+  } else if (view === 'current') {
+    if (cwd !== undefined) {
+      try {
+        projectId = resolveCurrentProject(db, cwd).project.id;
+      } catch (err) {
+        if (err instanceof ProjectError && err.code === 'unbound') {
+          note = `${err.message} Listing the whole store instead.`;
+        } else {
+          throw err;
+        }
+      }
+    } else {
+      note = 'no cwd was given, so no Current Project could be resolved; listing the whole store';
+    }
+  }
   if (filter?.parentId !== undefined) {
     requireTaskExists(db, filter.parentId);
   }
@@ -180,7 +203,8 @@ export function queryTasks(db: Db, input: unknown): TaskQueryResult {
     }
   }
   tasks.sort(comparator(filter?.sort));
-  return { tasks: filter?.limit === undefined ? tasks : tasks.slice(0, filter.limit), scope };
+  const limited = filter?.limit === undefined ? tasks : tasks.slice(0, filter.limit);
+  return note === undefined ? { tasks: limited } : { tasks: limited, note };
 }
 
 /**
@@ -200,43 +224,6 @@ export function listTags(db: Db): { tags: TagUsage[] } {
     )
     .all() as TagUsage[];
   return { tags };
-}
-
-// --------------------------------------------------------------------------
-// Scope resolution
-// --------------------------------------------------------------------------
-
-function resolveQueryScope(
-  db: Db,
-  view: QuickView,
-  filter: TaskFilter | undefined,
-  cwd: string | undefined,
-): { projectId: number | null; scope: QueryScope } {
-  if (filter?.project !== undefined) {
-    const project = findProject(db, filter.project); // explicit project wins, like task_create
-    return { projectId: project.id, scope: { project: { id: project.id, name: project.name } } };
-  }
-  if (view === 'all') {
-    return { projectId: null, scope: { project: null } }; // everything, by definition
-  }
-  if (cwd !== undefined) {
-    try {
-      const current = resolveCurrentProject(db, cwd);
-      return {
-        projectId: current.project.id,
-        scope: { project: { id: current.project.id, name: current.project.name } },
-      };
-    } catch (err) {
-      if (err instanceof ProjectError && err.code === 'unbound') {
-        return { projectId: null, scope: { project: null, note: `${err.message} Listing the whole store instead.` } };
-      }
-      throw err;
-    }
-  }
-  return {
-    projectId: null,
-    scope: { project: null, note: 'no cwd was given, so no Current Project could be resolved; listing the whole store' },
-  };
 }
 
 // findProject / parseProjectRef / parseDatetime are imported from the task
