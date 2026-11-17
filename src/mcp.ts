@@ -106,7 +106,7 @@ export function buildMcpServer(db: Db): McpServer {
         project: z
           .union([z.string(), z.number().int()])
           .optional()
-          .describe('explicit project name or id; defaults to unbound (capture now, bind later with task_update)'),
+          .describe('explicit project name or id; defaults to Unbound (capture now, bind later with task_update)'),
         parent: z.number().int().optional().describe('id of the parent task (may be in another project)'),
         tags: z.array(z.string()).optional().describe('lowercased and deduplicated on save'),
         deps: z
@@ -152,7 +152,7 @@ export function buildMcpServer(db: Db): McpServer {
         'List tasks through the query model: a quick view (view: "current" | "today" | "blocked" | "all") ' +
         'OR a structured filter (the filter fields below, combined with AND). ' +
         'The DEFAULT listing is global: open tasks across every project, Unbound ones included; ' +
-        'an explicit project (name or id) narrows it to one board. ' +
+        'an explicit project (name or id) narrows it to one Project. ' +
         'current = open tasks of the cwd-resolved Current Project (the one read that consults cwd; ' +
         'when the cwd resolves to nothing the whole store is listed and the response carries a note); ' +
         'today = open tasks due today or overdue; blocked = open and blocked; ' +
@@ -217,7 +217,7 @@ export function buildMcpServer(db: Db): McpServer {
         '(replaces the dependency set; deps: null or [] clears it), and project (the attribute move: ' +
         'a name or id binds the task AND its whole subtree in one cascade; null unbinds the subtree — ' +
         'single-task reassignment without the cascade is not expressible). ' +
-        'Dependencies must satisfy the same-project-or-two-unbound rule against the post-update project, ' +
+        'Dependencies must satisfy the one project constraint (same project, or two Unbound tasks) against the post-update project, ' +
         'cannot include the task itself, and must keep the graph a DAG — cycle-forming dep sets are ' +
         'rejected with the offending path. ' +
         'Ancestor-cycle reparenting is rejected with the cycle path. ' +

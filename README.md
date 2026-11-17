@@ -1,6 +1,6 @@
 # Baton
 
-Baton gives every AI coding-agent session on one machine a shared, durable task board. A single daemon, bound to `127.0.0.1` only, serves a plain HTTP JSON API as its core and a thin MCP adapter (streamable HTTP) on top, so several agent sessions — and a terminal with `curl` — all read and write the same store. Capture-first: every task starts Unbound, and binding it to a Project is an explicit, subtree-wide act. Tasks nest as a single-parent tree (across Projects freely), ordering is a dependency DAG within a board's scope, and every change is recorded in an append-only change log with the client that made it. All state lives in one SQLite database under `~/.baton/`.
+Baton gives every AI coding-agent session on one machine a shared, durable task store. A single daemon, bound to `127.0.0.1` only, serves a plain HTTP JSON API as its core and a thin MCP adapter (streamable HTTP) on top, so several agent sessions — and a terminal with `curl` — all read and write the same store. Capture-first: every task starts Unbound, and binding it to a Project is an explicit, subtree-wide act. Tasks nest as a single-parent tree (across Projects freely), ordering is a dependency DAG within a Project's scope, and every change is recorded in an append-only change log with the client that made it. All state lives in one SQLite database under `~/.baton/`.
 
 - **Domain glossary (normative)**: `CONTEXT.md`
 - **Architecture decisions**: `docs/adr/`
@@ -90,7 +90,7 @@ The same core the MCP tools wrap, curl-friendly:
 | `POST /tasks` | create a Task (capture-first: no project needed; `project` optional, absent/null = Unbound) |
 | `GET /tasks` | default listing: global open tasks (`{tasks}`) |
 | `GET /tasks?view=…` | quick view (`current`, `today`, `blocked`, `all`); `current` also takes `?cwd=` |
-| `GET /tasks?filter=…` | structured JSON filter (URL-encoded; `project` narrows to one board) |
+| `GET /tasks?filter=…` | structured JSON filter (URL-encoded; `project` narrows to one Project) |
 | `GET /tasks/:id` | full detail: task + children + intervals + annotations + changes |
 | `PATCH /tasks/:id` | update fields, reparent, set deps, change status, bind/unbind the Project (cascades to the subtree) |
 | `POST /tasks/:id/start` | start verb (`pending|waiting → active`) |
@@ -140,7 +140,7 @@ The default listing is global open tasks — captured Unbound work is always vis
 curl -s http://127.0.0.1:7600/tasks
 ```
 
-Work one board at a time via the `project` filter (name or id), or keep repo-scoped reading with `view=current`:
+Work one Project at a time via the `project` filter (name or id), or keep repo-scoped reading with `view=current`:
 
 ```sh
 curl -s 'http://127.0.0.1:7600/tasks?filter=%7B%22project%22%3A%22my-app%22%7D'

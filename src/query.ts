@@ -24,7 +24,7 @@ import {
  * Rules both surfaces share (capture-first, ADR-0005):
  * - The DEFAULT listing is GLOBAL: open tasks across every project, Unbound
  *   ones included. An explicit filter `project` (name or id) narrows it to
- *   one board.
+ *   one Project.
  * - Quick views: `current` (open tasks of the cwd-resolved Current Project —
  *   the one read that still consults cwd, with the whole-store fallback note
  *   when the cwd resolves to nothing), `today` (open tasks due today or
@@ -44,7 +44,7 @@ import {
  *
  * Read-path scale note: candidates are assembled into full TaskViews (tags,
  * deps, blocked, progress) and filtered in memory. On a single machine's
- * board this is a few SQL point-lookups per task and keeps the semantics in
+ * store this is a few SQL point-lookups per task and keeps the semantics in
  * one obvious place instead of mirroring derived-state rules into SQL.
  */
 

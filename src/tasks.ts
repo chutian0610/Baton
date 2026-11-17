@@ -2,7 +2,18 @@ import type { Actor } from './actors.js';
 import { listAnnotations, type AnnotationView } from './annotations.js';
 import { recentChanges, recordChange, type ChangeLogView, type FieldDiff } from './changelog.js';
 import type { Db } from './db.js';
-import { deriveBlocked, deriveProgress, findDependencyCyclePath, listDeps, parseDeps, validateDeps, writeDeps } from './deps.js';
+import {
+  deriveBlocked,
+  deriveProgress,
+  describeProjectBinding,
+  findDependencyCyclePath,
+  listDeps,
+  parseDeps,
+  projectName,
+  sameProjectOrBothUnbound,
+  validateDeps,
+  writeDeps,
+} from './deps.js';
 import { asBody, display } from './internal.js';
 import { applyStatusTransition, parseStatusTarget, taskIntervals, type IntervalView, type TaskStatus } from './lifecycle.js';
 
@@ -294,7 +305,7 @@ export function updateTask(db: Db, id: unknown, input: unknown, actor: Actor): T
     // UPDATE and append one change-log row per affected descendant.
     if (project !== undefined && newProjectId !== current.project_id) {
       const movedIds = collectSubtreeIds(db, taskId);
-      const placeholders = movedIds.map(() => '?').join(', ');
+      const placeholders = placeholdersFor(movedIds);
       const beforeRows = db
         .prepare(`SELECT id, project_id FROM tasks WHERE id IN (${placeholders})`)
         .all(...movedIds) as { id: number; project_id: number | null }[];
@@ -457,6 +468,11 @@ export function findProject(db: Db, ref: string | number): { id: number; name: s
   return row as { id: number; name: string };
 }
 
+/** An IN-list's `?` placeholders, one per id (callers bind the ids in order). */
+function placeholdersFor(ids: number[]): string {
+  return ids.map(() => '?').join(', ');
+}
+
 /**
  * Walks `rootId`'s descendants breadth-first (the task itself first): the
  * moved set of a cascade project assignment (ADR-0005 — binding a Task binds
@@ -487,7 +503,7 @@ function collectSubtreeIds(db: Db, rootId: number): number[] {
  */
 function validateProjectMove(db: Db, taskId: number, movedIds: number[], newProjectId: number | null): void {
   const moved = new Set(movedIds);
-  const placeholders = movedIds.map(() => '?').join(', ');
+  const placeholders = placeholdersFor(movedIds);
   const edges = db
     .prepare(
       `SELECT task_id AS dependent, depends_on AS dependency FROM task_deps
@@ -500,7 +516,6 @@ function validateProjectMove(db: Db, taskId: number, movedIds: number[], newProj
 
   const outsideProjects = new Map<number, number | null>();
   const findProjectId = db.prepare('SELECT project_id FROM tasks WHERE id = ?');
-  const projectName = db.prepare('SELECT name FROM projects WHERE id = ?');
   // The project an edge endpoint will have AFTER the move: moved endpoints
   // take the new project, others keep theirs.
   const projectAfterMove = (id: number): number | null => {
@@ -518,16 +533,15 @@ function validateProjectMove(db: Db, taskId: number, movedIds: number[], newProj
     }
     return projectId;
   };
-  const describeOutside = (id: number): string => {
-    const projectId = projectAfterMove(id); // == the stored project for outside tasks
-    return projectId === null ? 'still unbound' : `still in project ${(projectName.get(projectId) as { name: string }).name}`;
-  };
+  // Outside endpoints keep their stored project, hence the shared binding
+  // description's "still" wording (dep-set validation uses the 'belongs' one).
+  const describeOutside = (id: number): string => describeProjectBinding(db, projectAfterMove(id), 'still');
 
   const violations: string[] = [];
   for (const edge of edges) {
     const dependentProject = projectAfterMove(edge.dependent);
     const dependencyProject = projectAfterMove(edge.dependency);
-    if (dependentProject === dependencyProject) {
+    if (sameProjectOrBothUnbound(dependentProject, dependencyProject)) {
       continue; // same project, or both Unbound — the one legal cross-attr pairing
     }
     violations.push(
@@ -538,7 +552,7 @@ function validateProjectMove(db: Db, taskId: number, movedIds: number[], newProj
   }
   if (violations.length > 0) {
     violations.sort(); // deterministic message text
-    const target = newProjectId === null ? 'unbound' : `project ${(projectName.get(newProjectId) as { name: string }).name}`;
+    const target = newProjectId === null ? 'unbound' : `project ${projectName(db, newProjectId)}`;
     throw new TaskError(
       'conflict',
       `moving task ${taskId} (with its subtree) to ${target} would leave cross-project dependencies: ` +
@@ -615,14 +629,7 @@ export function assembleTask(db: Db, id: number): TaskView | undefined {
 
 /** A task's project name, or null when the task is Unbound (never a made-up placeholder). */
 function projectNameById(db: Db, id: number | null): string | null {
-  if (id === null) {
-    return null;
-  }
-  const row = db.prepare('SELECT name FROM projects WHERE id = ?').get(id) as { name: string } | undefined;
-  if (row === undefined) {
-    throw new Error(`task references missing project ${id}`);
-  }
-  return row.name;
+  return id === null ? null : projectName(db, id);
 }
 
 /** Replaces a task's tags wholesale (callers normalize first). */

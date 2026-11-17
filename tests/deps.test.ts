@@ -214,7 +214,7 @@ test('Unbound tasks may depend on each other and form graphs', async () => {
   expect((await detail(a.id)).task).toMatchObject({ projectId: null, deps: [], blocked: false });
 });
 
-test('unbound-to-projected dependencies are illegal in both directions', async () => {
+test('dependencies between Unbound tasks and tasks with a Project are illegal in both directions', async () => {
   await makeProject('half-bound');
   const unbound = await makeTask({ title: 'Unbound side' });
   const bound = await makeTask({ title: 'Bound side', project: 'half-bound' });
