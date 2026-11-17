@@ -11,8 +11,8 @@ A unit of work with a status, belonging to at most one Project. Tasks nest into 
 _Avoid_: Todo, item, ticket, issue
 
 **Project**:
-An explicitly created grouping of tasks, optionally bound to one or more local filesystem paths. When a caller presents a working directory, the bound Project is resolved as the caller's Current Project.
-_Avoid_: Workspace, repo, folder
+An explicitly created named grouping, applied to tasks as an attribute — assigning a Project to a Task assigns it to that Task's whole subtree. A Project is never a container that structures tasks. A Project may be bound to one or more local filesystem paths; when a caller presents a working directory, the bound Project is resolved as the caller's Current Project.
+_Avoid_: Workspace, repo, folder, container
 
 **Current Project**:
 The Project resolved from the caller's working directory. List views default to it unless the caller explicitly queries across projects.
@@ -21,10 +21,14 @@ _Avoid_: Context
 **Tag**:
 A free-form lowercase label attached to tasks for cross-project grouping.
 
+**Unbound**:
+A Task whose Project attribute is unset — the state every Task starts in. Unbound tasks nest and depend among themselves like any other tasks.
+_Avoid_: Inbox, unfiled, uncategorized
+
 ### Structure
 
 **Parent / Child**:
-The single-parent nesting relationship between tasks. A Parent task expresses decomposition ("these children make up this work"); it is never a scheduling or dependency relationship.
+The single-parent nesting relationship between tasks. A Parent task expresses decomposition ("these children make up this work"); it is never a scheduling or dependency relationship. The relationship is independent of Project membership — a tree may span Projects.
 _Avoid_: Milestone (a Parent task is just a Parent task — see below)
 
 **Milestone**:
@@ -32,7 +36,7 @@ Not a concept in Baton. A milestone is an ordinary Parent task whose completion 
 _Avoid_: Epic, milestone-as-entity
 
 **Dependency**:
-A directed edge meaning "this task cannot start until its dependencies are done." Dependencies form a DAG, are orthogonal to Parent/Child, and cycles are rejected.
+A directed edge meaning "this task cannot start until its dependencies are done." Dependencies may only connect tasks of the same Project — or two Unbound tasks — and form a DAG, orthogonal to Parent/Child; cycles are rejected.
 
 **Blocked**:
 A derived property of a task: true when any of its dependencies is not `done` or `dropped`. Never stored as a Status, and never prevents a task from becoming `active`.
