@@ -1,10 +1,16 @@
 # Baton
 
+[![CI](https://github.com/chutian0610/Baton/actions/workflows/ci.yml/badge.svg)](https://github.com/chutian0610/Baton/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/@chutian0610/baton)](https://www.npmjs.com/package/@chutian0610/baton)
+![node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen)
+![license](https://img.shields.io/badge/license-MIT-blue)
+
 Baton gives every AI coding-agent session on one machine a shared, durable task store. A single daemon, bound to `127.0.0.1` only, serves a plain HTTP JSON API as its core and a thin MCP adapter (streamable HTTP) on top, so several agent sessions — and a terminal with `curl` — all read and write the same store. Capture-first: every task starts Unbound, and binding it to a Project is an explicit, subtree-wide act. Tasks nest as a single-parent tree (across Projects freely), ordering is a dependency DAG within a Project's scope, and every change is recorded in an append-only change log with the client that made it. All state lives in one SQLite database under `~/.baton/`.
 
 - **Domain glossary (normative)**: `CONTEXT.md`
 - **Architecture decisions**: `docs/adr/`
 - **Specs**: GitHub issues #1 (v1) and #12 (v0.2 capture-first)
+- **Package**: [@chutian0610/baton](https://www.npmjs.com/package/@chutian0610/baton)
 
 ## Install
 
@@ -264,5 +270,32 @@ Short version — `CONTEXT.md` is the normative glossary:
 ```sh
 npm install   # installs dev deps, builds dist/ via prepare
 npm run build # tsc
-npm test      # vitest; boots the real daemon as a subprocess (build first)
+npm test      # the full process-level suite; spawns the real daemon (build first)
 ```
+
+Tests are process-level by design: every suite boots the **built** daemon as a subprocess on a random port with a temp data directory, then asserts only external behavior — HTTP responses via `fetch`, MCP via the official client SDK. No mocks anywhere.
+
+The end-to-end journey (`tests/integration.test.ts`) can also verify a **live instance**:
+
+```sh
+baton daemon --port 7601 --data /tmp/baton-accept
+BATON_ACCEPTANCE_URL=http://127.0.0.1:7601 npx vitest run tests/integration.test.ts
+```
+
+It mutates that store by design (created tasks are dropped in cleanup; the timestamped `acc-*` projects remain — there is no hard delete) and skips its restart-durability step so it never touches your daemon's lifecycle.
+
+### CI/CD
+
+| Workflow | Trigger | Does |
+| --- | --- | --- |
+| `ci.yml` | push to `main`, every pull request | build + the full suite (superseded runs are cancelled) |
+| `npm-publish.yml` | `v*` tag | full suite → npm publish via Trusted Publishing (OIDC) → GitHub release with generated notes |
+
+### Releasing
+
+```sh
+npm version minor       # or patch / major: bumps package.json, commits, tags v0.x.y
+git push --follow-tags  # main + tag out; CI tests, publishes to npm, creates the release
+```
+
+Nothing else — the tag-triggered workflow is the only publishing path, and it gates on the full suite.
