@@ -1,28 +1,38 @@
 name: npm publish
 
 # Publishing follows the version tags: cutting a v* tag runs the full test
-# suite and publishes to npm via Trusted Publishing (OIDC) — no token secret
-# required. The package's Trusted Publisher settings on npmjs.com must list
-# this repository (chutian0610/Baton) and this workflow file (npm-publish.yml).
+# suite, publishes to npm via Trusted Publishing (OIDC — no token secret
+# required), and creates the matching GitHub release with generated notes.
+# The package's Trusted Publisher settings on npmjs.com must list this
+# repository (chutian0610/Baton) and this workflow file (npm-publish.yml).
 
 on:
   push:
     tags:
       - 'v*'
 
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write # create the GitHub release
       id-token: write # OIDC: npm Trusted Publishing
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org/
+          cache: npm
       - run: npm ci
       - run: npm test
       - run: npm install -g npm@latest # trusted publishing needs npm >= 11.5.1
       - run: npm publish
+      - name: Create GitHub release
+        run: gh release create "$GITHUB_REF_NAME" --generate-notes --latest
+        env:
+          GH_TOKEN: ${{ github.token }}
