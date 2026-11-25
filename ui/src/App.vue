@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue';
+import NewTaskForm from './components/NewTaskForm.vue';
 import ProjectPicker from './components/ProjectPicker.vue';
 import TaskDetail from './components/TaskDetail.vue';
 import TaskTree from './components/TaskTree.vue';
@@ -48,6 +49,7 @@ const detailId = computed(() => (route.value.name === 'task' ? route.value.id : 
       :now="Date.now()"
       @change="store.setVisibility"
     />
+    <NewTaskForm :scope="store.state.scope" @created="store.refresh()" />
     <main>
       <p v-if="store.state.loading && store.state.lastSync === null">Loading…</p>
       <p v-else-if="store.list.value.length === 0">No tasks in view.</p>
@@ -58,7 +60,7 @@ const detailId = computed(() => (route.value.name === 'task' ? route.value.id : 
   <template v-else>
     <main>
       <button type="button" class="back" @click="navigate('/ui')">← Back</button>
-      <TaskDetail :id="detailId" />
+      <TaskDetail :id="detailId" @mutated="store.refresh()" />
     </main>
   </template>
 </template>
