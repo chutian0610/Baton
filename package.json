@@ -1,6 +1,6 @@
 {
   "name": "@chutian0610/baton",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A single-machine task management MCP daemon for AI coding agents",
   "type": "module",
   "license": "MIT",
