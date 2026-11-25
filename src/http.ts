@@ -1,5 +1,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { readFile, stat } from 'node:fs/promises';
+import { extname, join, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { buildMcpServer } from './mcp.js';
@@ -34,6 +37,9 @@ import type { Db } from './db.js';
  *   GET  /tasks/:id/annotations   -> 200 annotations, newest first
  *   GET  /tasks/:id/changes       -> 200 {changes, total}: the FULL change history,
  *                                    newest first, paged (?limit= default 100, ?offset= 0)
+ *   GET  /ui, /ui/*               -> the built Web UI bundle (ADR-0006): static files
+ *                                    under dist/ui, any other /ui/* path falls back to
+ *                                    index.html (client-side routing owns unknown paths)
  *   *    /mcp                     -> MCP streamable HTTP transport (stateful sessions)
  *
  * Origin/Host check (ADR-0006, v0.3 T1): every request bearing an Origin
@@ -101,6 +107,11 @@ async function handleRequest(
     }
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok' }));
+    return;
+  }
+
+  if (path === '/ui' || path.startsWith('/ui/')) {
+    await handleUiRoute(req, res, path);
     return;
   }
 
@@ -223,6 +234,78 @@ function readJsonBody(req: IncomingMessage): Promise<unknown> {
 }
 
 const JSON_HEADERS = { 'content-type': 'application/json' };
+
+/**
+ * The Web UI bundle (ADR-0006/0007): the built SPA lives in dist/ui/, next to
+ * this compiled file — the same relative layout ships in the npm package, so
+ * the resolution works identically in a checkout and a global install.
+ */
+const UI_ROOT = fileURLToPath(new URL('./ui', import.meta.url));
+
+const UI_CONTENT_TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.png': 'image/png',
+  '.woff2': 'font/woff2',
+  '.json': 'application/json',
+  '.map': 'application/json',
+  '.txt': 'text/plain; charset=utf-8',
+};
+
+/**
+ * GET/HEAD /ui and /ui/*: serve files from the built bundle. Any path that
+ * does not resolve to a file falls back to index.html — client-side routing
+ * owns unknown URLs (SPA semantics). URL-decoding happens before the
+ * containment check, so %2e%2e-style traversal escapes are refused with a
+ * 404. When even index.html is missing, the bundle was not built: say so.
+ */
+async function handleUiRoute(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    res.writeHead(405, { allow: 'GET, HEAD', ...JSON_HEADERS });
+    res.end(JSON.stringify({ error: 'method not allowed' }));
+    return;
+  }
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(path.slice('/ui'.length));
+  } catch {
+    res.writeHead(404, JSON_HEADERS);
+    res.end(JSON.stringify({ error: 'not found' }));
+    return;
+  }
+  const absolute = resolve(UI_ROOT, decoded.replace(/^\/+/, ''));
+  if (absolute !== UI_ROOT && !absolute.startsWith(UI_ROOT + sep)) {
+    res.writeHead(404, JSON_HEADERS);
+    res.end(JSON.stringify({ error: 'not found' }));
+    return;
+  }
+  let target = absolute;
+  try {
+    const stats = await stat(target);
+    if (stats.isDirectory()) {
+      target = join(target, 'index.html');
+    } else if (!stats.isFile()) {
+      throw new Error('not a regular file');
+    }
+  } catch {
+    target = join(UI_ROOT, 'index.html'); // SPA fallback: the shell renders unknown paths
+  }
+  try {
+    const content = await readFile(target);
+    res.writeHead(200, {
+      'content-type': UI_CONTENT_TYPES[extname(target)] ?? 'application/octet-stream',
+      'content-length': content.length,
+    });
+    res.end(req.method === 'HEAD' ? undefined : content);
+  } catch {
+    res.writeHead(404, JSON_HEADERS);
+    res.end(JSON.stringify({ error: 'ui bundle not found — run npm run build to produce dist/ui' }));
+  }
+}
 
 /** Treat a missing or empty query param as absent (?view= is the same as no view). */
 function nonEmptyParam(value: string | null): string | undefined {
