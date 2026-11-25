@@ -177,13 +177,17 @@ test('clicking a task navigates into the detail route; back returns to the list'
   const wrapper = await mountApp();
 
   await wrapper.findAll('.task-link').find((node) => node.text() === 'parent tree node')!.trigger('click');
-  await wrapper.vm.$nextTick();
+  // the detail fetch rides real network I/O — wait for the h1 (T5)
+  for (let i = 0; i < 100 && !wrapper.find('h1').exists(); i++) {
+    await flushPromises();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
 
   expect(window.location.pathname).toBe(`/ui/tasks/${parentId}`);
-  expect(wrapper.text()).toContain(`Task detail for #${parentId}`);
-  expect(wrapper.text()).toContain('lands with T5');
+  expect(wrapper.find('h1').text()).toBe('parent tree node');
 
-  await wrapper.find('main button').trigger('click'); // ← Back
+  await wrapper.find('main button.back').trigger('click'); // ← Back
+  await flushPromises();
   await wrapper.vm.$nextTick();
   expect(window.location.pathname).toBe('/ui');
   expect(wrapper.findAll('.task-row').length).toBeGreaterThan(0);

@@ -61,6 +61,25 @@ export interface Change {
 
 /** A recorded span of a task being active, as returned inside GET /tasks/:id. */
 export interface Interval {
+  id: number;
   startedAt: string;
+  /** null while the Interval is open (the task is active). */
   endedAt: string | null;
+}
+
+/** A child summary as returned inside GET /tasks/:id. */
+export interface ChildSummary {
+  id: number;
+  title: string;
+  status: TaskStatus;
+}
+
+/** The composite payload of GET /tasks/:id. */
+export interface TaskDetailPayload {
+  task: Task;
+  children: ChildSummary[];
+  intervals: Interval[];
+  totalActiveMs: number;
+  annotations: Annotation[];
+  recentChanges: Change[];
 }

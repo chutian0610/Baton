@@ -1,4 +1,4 @@
-import type { Project, Task } from './types';
+import type { Project, Task, TaskDetailPayload } from './types';
 
 /**
  * The API client: plain fetch against the HTTP API (ADR-0006 — in production
@@ -18,6 +18,7 @@ export interface ProjectListPayload {
 export interface Api {
   listTasks(): Promise<TaskListPayload>;
   listProjects(): Promise<ProjectListPayload>;
+  getTask(id: number): Promise<TaskDetailPayload>;
 }
 
 export function createHttpApi(base = ''): Api {
@@ -31,6 +32,7 @@ export function createHttpApi(base = ''): Api {
   return {
     listTasks: () => getJson<TaskListPayload>('/tasks?view=all'),
     listProjects: () => getJson<ProjectListPayload>('/projects'),
+    getTask: (id: number) => getJson<TaskDetailPayload>(`/tasks/${id}`),
   };
 }
 

@@ -30,6 +30,10 @@ function countingApi(inner: Api): Api & { count: () => number } {
       reads += 1;
       return inner.listProjects();
     },
+    async getTask(id: number) {
+      reads += 1;
+      return inner.getTask(id);
+    },
   };
   return { ...wrapped, count: () => reads };
 }
@@ -121,6 +125,7 @@ test('a dead transport lands in state.error instead of throwing out of the loop'
   const dead: Api = {
     listTasks: () => fetch('http://127.0.0.1:9/tasks?view=all').then((r) => r.json()),
     listProjects: () => fetch('http://127.0.0.1:9/projects').then((r) => r.json()),
+    getTask: (id: number) => fetch(`http://127.0.0.1:9/tasks/${id}`).then((r) => r.json()),
   };
   const store = createStore({ api: dead, storage: mapStorage() });
   await store.refresh();
