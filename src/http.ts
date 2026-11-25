@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { buildMcpServer } from './mcp.js';
-import { HTTP_ACTOR } from './actors.js';
+import { HTTP_ACTOR, WEB_ACTOR, type Actor } from './actors.js';
 import { appendAnnotation } from './annotations.js';
 import { listChanges } from './changelog.js';
 import { display } from './internal.js';
@@ -36,8 +36,14 @@ import type { Db } from './db.js';
  *                                    newest first, paged (?limit= default 100, ?offset= 0)
  *   *    /mcp                     -> MCP streamable HTTP transport (stateful sessions)
  *
- * Direct HTTP calls record the constant Actor {kind: "http"} (src/actors.ts)
- * on every change and annotation they cause.
+ * Origin/Host check (ADR-0006, v0.3 T1): every request bearing an Origin
+ * header whose authority differs from the request's Host is 403-rejected
+ * before routing — the drive-by/CSRF guard a browser surface introduces.
+ * curl and MCP clients send no Origin and are unaffected.
+ *
+ * Direct HTTP calls record Actor {kind: "http"} (src/actors.ts) on every
+ * change and annotation they cause; requests arriving with a passing Origin
+ * header — the bundled Web UI — record {kind: "web"}.
  *
  * Stateful session handling follows the SDK's canonical wiring: one
  * StreamableHTTPServerTransport (plus a fresh McpServer) per initialize; the
@@ -75,6 +81,16 @@ async function handleRequest(
   db: Db,
   sessions: Map<string, StreamableHTTPServerTransport>,
 ): Promise<void> {
+  // The drive-by/CSRF guard (ADR-0006): a browser page anywhere on the web
+  // can fire requests at a localhost daemon; reads are already CORS-blocked,
+  // writes would not be. Uniform across every route — there are no exempt
+  // paths. curl and MCP clients send no Origin and sail through.
+  if (crossOrigin(req)) {
+    res.writeHead(403, JSON_HEADERS);
+    res.end(JSON.stringify({ error: 'cross-origin request rejected: the Origin header does not match the request Host' }));
+    return;
+  }
+
   const path = (req.url ?? '').split('?')[0];
 
   if (path === '/healthz') {
@@ -147,6 +163,47 @@ async function handleRequest(
   res.end(JSON.stringify({ error: 'missing or unknown session id' }));
 }
 
+function firstHeader(req: IncomingMessage, name: string): string | undefined {
+  const raw = req.headers[name];
+  return Array.isArray(raw) ? raw[0] : raw;
+}
+
+/**
+ * True when the request carries an Origin header that does not belong to this
+ * server. Comparison is authority-only (host[:port], case-insensitive) against
+ * the request's own Host header — exactly what a browser guarantees for
+ * same-origin requests, whatever hostname was used to reach the daemon. An
+ * unparseable Origin (including the literal "null", e.g. sandboxed iframes)
+ * and a missing Host alongside an Origin both fail closed.
+ */
+function crossOrigin(req: IncomingMessage): boolean {
+  const origin = firstHeader(req, 'origin');
+  if (origin === undefined) {
+    return false;
+  }
+  const host = firstHeader(req, 'host');
+  if (host === undefined) {
+    return true;
+  }
+  let originAuthority: string;
+  try {
+    originAuthority = new URL(origin).host;
+  } catch {
+    return true; // "null" and other non-URL origins are never same-origin
+  }
+  return originAuthority.toLowerCase() !== host.toLowerCase();
+}
+
+/**
+ * Actor classification for the JSON API surface (v0.3 T1): a passing Origin
+ * header means the request came from a browser (the bundled Web UI is the
+ * only same-origin browser client on a localhost daemon) — record `web`;
+ * without one it is a direct HTTP call — record the constant `http`.
+ */
+function httpSurfaceActor(req: IncomingMessage): Actor {
+  return firstHeader(req, 'origin') !== undefined ? WEB_ACTOR : HTTP_ACTOR;
+}
+
 function readJsonBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let data = '';
@@ -189,7 +246,7 @@ async function handleProjectsRoute(
         return;
       }
       try {
-        const project = createProject(db, body, HTTP_ACTOR);
+        const project = createProject(db, body, httpSurfaceActor(req));
         res.writeHead(201, JSON_HEADERS);
         res.end(JSON.stringify({ project }));
       } catch (err) {
@@ -275,7 +332,7 @@ async function handleTasksRoute(
         return;
       }
       try {
-        const task = createTask(db, body, HTTP_ACTOR);
+        const task = createTask(db, body, httpSurfaceActor(req));
         res.writeHead(201, JSON_HEADERS);
         res.end(JSON.stringify({ task }));
       } catch (err) {
@@ -347,7 +404,7 @@ async function handleTasksRoute(
       return;
     }
     try {
-      const task = transitionTaskStatus(db, segments[0], segments[1] === 'start' ? 'active' : 'done', HTTP_ACTOR);
+      const task = transitionTaskStatus(db, segments[0], segments[1] === 'start' ? 'active' : 'done', httpSurfaceActor(req));
       res.writeHead(200, JSON_HEADERS);
       res.end(JSON.stringify({ task }));
     } catch (err) {
@@ -383,7 +440,7 @@ async function handleTasksRoute(
       return;
     }
     try {
-      const task = updateTask(db, id, body, HTTP_ACTOR);
+      const task = updateTask(db, id, body, httpSurfaceActor(req));
       res.writeHead(200, JSON_HEADERS);
       res.end(JSON.stringify({ task }));
     } catch (err) {
@@ -439,7 +496,8 @@ function pageParam(raw: string | undefined, field: string, fallback: number, min
 
 /**
  * Annotation sub-resource of a task. Append-only by construction: POST
- * appends (carrying the constant HTTP actor), GET lists; every other method
+ * appends (carrying the classified HTTP-surface actor — `web` with a passing
+ * Origin header, `http` otherwise), GET lists; every other method
  * is a 405 naming the allowed ones — no edit or delete route exists.
  */
 async function handleAnnotationsRoute(
@@ -459,7 +517,7 @@ async function handleAnnotationsRoute(
     }
     const text = (typeof body === 'object' && body !== null ? (body as { body?: unknown }).body : undefined);
     try {
-      const annotation = appendAnnotation(db, id, text, HTTP_ACTOR);
+      const annotation = appendAnnotation(db, id, text, httpSurfaceActor(req));
       res.writeHead(201, JSON_HEADERS);
       res.end(JSON.stringify({ annotation }));
     } catch (err) {
