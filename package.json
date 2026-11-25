@@ -45,6 +45,8 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.10.0",
     "@vitejs/plugin-vue": "^6.0.11",
+    "@vue/test-utils": "^2.6.0",
+    "happy-dom": "^21.0.4",
     "typescript": "^5.7.0",
     "vite": "^8.3.8",
     "vitest": "^5.1.0",

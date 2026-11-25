@@ -1,11 +1,22 @@
 <script setup lang="ts">
-// Tracer (v0.3 T2): proves the build → serve → render chain. The real UI
-// surfaces land with T3–T6 (spec #22).
+import { onMounted, onUnmounted } from 'vue';
+import ProjectPicker from './components/ProjectPicker.vue';
+import { createStore } from './store';
+
+// T3 wiring: the read spine starts polling on mount and stops on unmount.
+// The list views (T4) replace the placeholder main below.
+const store = createStore();
+
+onMounted(() => store.start());
+onUnmounted(() => store.stop());
 </script>
 
 <template>
+  <header>
+    <ProjectPicker :scope="store.state.scope" :projects="store.state.projects" @change="store.setScope" />
+    <span v-if="store.state.error" class="error">{{ store.state.error }}</span>
+  </header>
   <main>
-    <h1>Baton</h1>
-    <p>The Web UI is on its way — this page proves the build &rarr; serve &rarr; render chain.</p>
+    <p>{{ store.list.value.length }} task(s) in view.</p>
   </main>
 </template>
