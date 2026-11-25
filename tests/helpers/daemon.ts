@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { get as httpGet } from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,7 +21,19 @@ import { fileURLToPath } from 'node:url';
  *      to stdout once the HTTP server is bound;
  *   2. `GET /healthz` answers 200 once the daemon serves traffic.
  */
-const PROJECT_ROOT = fileURLToPath(new URL('../..', import.meta.url));
+/**
+ * The repo root: relative to this module under normal (file://) resolution,
+ * falling back to the vitest cwd — DOM test environments rewrite
+ * import.meta.url to a non-file URL, where fileURLToPath cannot help.
+ */
+function projectRoot(): string {
+  try {
+    return fileURLToPath(new URL('../..', import.meta.url));
+  } catch {
+    return process.cwd();
+  }
+}
+const PROJECT_ROOT = projectRoot();
 const DAEMON_ENTRY = join(PROJECT_ROOT, 'dist', 'index.js');
 
 const PORT_TIMEOUT_MS = 15_000;
@@ -152,17 +165,27 @@ function isListeningEvent(message: unknown): message is { event: 'listening'; po
   );
 }
 
+/**
+ * One health probe over node:http directly — DOM test environments replace
+ * the global fetch with their own implementation, which must never sit on
+ * this harness's readiness path.
+ */
+function healthOnce(baseUrl: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const request = httpGet(`${baseUrl}/healthz`, (response) => {
+      response.resume();
+      resolve(response.statusCode === 200);
+    });
+    request.on('error', () => resolve(false));
+    request.end();
+  });
+}
+
 async function waitForHealth(baseUrl: string): Promise<void> {
   const deadline = Date.now() + HEALTH_TIMEOUT_MS;
   for (;;) {
-    try {
-      const response = await fetch(`${baseUrl}/healthz`);
-      if (response.ok) {
-        await response.body?.cancel();
-        return;
-      }
-    } catch {
-      // not accepting connections yet
+    if (await healthOnce(baseUrl)) {
+      return;
     }
     if (Date.now() > deadline) {
       throw new Error(`daemon did not answer GET /healthz within ${HEALTH_TIMEOUT_MS}ms`);
