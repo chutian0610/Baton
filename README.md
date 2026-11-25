@@ -107,8 +107,8 @@ Short version — `CONTEXT.md` is the normative glossary:
 ## Development
 
 ```sh
-npm install   # installs dev deps, builds dist/ via prepare
-npm run build # tsc
+npm install   # installs dev deps, builds dist/ (daemon via tsc, ui via vite) via prepare
+npm run build # tsc + vue-tsc + vite build (daemon + ui bundle)
 npm test      # the full process-level suite; spawns the real daemon (build first)
 ```
 
