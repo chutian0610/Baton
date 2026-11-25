@@ -1,6 +1,6 @@
 # Auto-start with launchd (macOS)
 
-The daemon runs in the foreground; for auto-start, install a launchd agent. A template also ships at `extras/com.baton.daemon.plist`.
+The daemon runs in the foreground; for auto-start, install a launchd agent. The template below is the single source — copy it and replace the two placeholders.
 
 1. Find the installed binary: `command -v baton`
 2. Copy the template to `~/Library/LaunchAgents/com.baton.daemon.plist` and replace the placeholders — `{{PATH_TO_BATON}}` with the binary path from step 1, `{{HOME}}` with your home directory.

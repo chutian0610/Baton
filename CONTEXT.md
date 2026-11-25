@@ -1,8 +1,14 @@
 # Baton
 
-A single-machine task management service for AI coding agents: one daemon, exposed to agents via MCP over HTTP, tracking todos and in-progress work across projects.
+A single-machine task management service for AI coding agents: one daemon serving three surfaces — MCP for agents, a plain HTTP JSON API for scripts, and a Web UI for the human — tracking todos and in-progress work across projects.
 
 ## Language
+
+### Surfaces
+
+**Surface**:
+One of the ways the store is accessed: the MCP adapter (agents), the HTTP JSON API (curl and scripts), and the Web UI (the human). A write is equally valid from any Surface and records its Actor.
+_Avoid_: Interface, frontend, client
 
 ### Core entities
 
@@ -15,7 +21,7 @@ An explicitly created named grouping, applied to tasks as an attribute — assig
 _Avoid_: Workspace, repo, folder, container
 
 **Current Project**:
-The Project resolved from the caller's working directory. List views default to it unless the caller explicitly queries across projects.
+The Project resolved from the caller's working directory. List views default to it unless the caller explicitly queries across projects. A Surface with no working directory — the Web UI — has no Current Project and scopes by explicit selection instead.
 _Avoid_: Context
 
 **Tag**:
@@ -66,7 +72,7 @@ A timestamped, append-only note attached to a task; the channel through which ag
 _Avoid_: Comment, log entry, description
 
 **Actor**:
-The provenance recorded on every change: which MCP client (and agent session, when known) performed it.
+The provenance recorded on every change: which surface performed it — an MCP client (with its session, when known) or a direct HTTP caller.
 
 **Change Log**:
 The append-only record of every mutation to every entity, with its Actor.
