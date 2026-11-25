@@ -1,19 +1,35 @@
 {
-  "name": "baton",
+  "name": "@chutian0610/baton",
   "version": "0.2.0",
   "description": "A single-machine task management MCP daemon for AI coding agents",
   "type": "module",
-  "license": "UNLICENSED",
-  "private": true,
+  "license": "MIT",
   "bin": {
     "baton": "dist/index.js"
   },
   "engines": {
     "node": ">=22"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chutian0610/Baton.git"
+  },
+  "keywords": [
+    "mcp",
+    "task-management",
+    "todo",
+    "ai-agents",
+    "claude",
+    "sqlite"
+  ],
+  "author": "chutian0610",
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
     "prepare": "npm run build",
+    "prepublishOnly": "npm test",
     "test": "vitest run"
   },
   "files": [

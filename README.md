@@ -10,6 +10,13 @@ Baton gives every AI coding-agent session on one machine a shared, durable task 
 
 Requirements: Node.js >= 22 (native module build needs a working toolchain; prebuilt binaries cover common platforms).
 
+From the npm registry:
+
+```sh
+npm install -g @chutian0610/baton   # exposes the `baton` command globally
+baton --help                        # prints a usage line — confirms the command is wired up
+```
+
 From a checkout of this repository:
 
 ```sh
