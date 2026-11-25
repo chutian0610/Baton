@@ -82,17 +82,23 @@ function bootDaemon(options: SpawnOptions): Promise<BootedDaemon> {
   });
 }
 
-/** Spawns the daemon and resolves its exit code plus collected stderr. */
-function runDaemonExpectExit(options: SpawnOptions): Promise<{ code: number | null; stderr: string }> {
-  const { child, stderr } = spawnDaemon(options);
+/** Spawns the daemon and resolves its exit code plus collected stdout and stderr. */
+function runDaemonExpectExit(
+  options: SpawnOptions,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const { child, stdout: stdoutOf, stderr } = spawnDaemon(options);
   const timer = setTimeout(() => void kill(child), EXIT_TIMEOUT_MS);
   return exited(child).then((code) => {
     clearTimeout(timer);
-    return { code, stderr: stderr() };
+    return { code, stdout: stdoutOf(), stderr: stderr() };
   });
 }
 
-function spawnDaemon(options: SpawnOptions): { child: ChildProcess; stderr: () => string } {
+function spawnDaemon(options: SpawnOptions): {
+  child: ChildProcess;
+  stdout: () => string;
+  stderr: () => string;
+} {
   // Empty-string env values are "not provided" to the resolver, so this
   // neutralizes any BATON_PORT/BATON_DATA_DIR inherited from the test runner.
   const env = { ...process.env, BATON_PORT: '', BATON_DATA_DIR: '', HOME: options.home, ...options.env };
@@ -101,11 +107,16 @@ function spawnDaemon(options: SpawnOptions): { child: ChildProcess; stderr: () =
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stderr = '';
+  let stdout = '';
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', (chunk: string) => {
     stderr += chunk;
   });
-  return { child, stderr: () => stderr };
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk: string) => {
+    stdout += chunk;
+  });
+  return { child, stdout: () => stdout, stderr: () => stderr };
 }
 
 function exited(child: ChildProcess): Promise<number | null> {
@@ -261,4 +272,24 @@ test('relative data_dir fails startup asking for an absolute path', async () => 
   } finally {
     await cleanupDir(home);
   }
+});
+
+// --------------------------------------------------------------------- --help
+
+test('--help and -h print the usage to stdout and exit 0 without starting a server', async () => {
+  const home = await tempHome();
+  for (const flag of ['--help', '-h']) {
+    const { code, stdout, stderr } = await runDaemonExpectExit({ argv: [flag], home });
+    expect(code).toBe(0);
+    expect(stdout).toContain('usage: baton [daemon] [--port N] [--data DIR]');
+    expect(stdout).not.toContain('listening'); // no server was started
+    expect(stderr).toBe('');
+  }
+});
+
+test('an unknown CLI flag still exits non-zero with the usage hint on stderr', async () => {
+  const home = await tempHome();
+  const { code, stderr } = await runDaemonExpectExit({ argv: ['--wat'], home });
+  expect(code).not.toBe(0);
+  expect(stderr).toContain('usage: baton');
 });

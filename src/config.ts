@@ -28,6 +28,9 @@ export interface DaemonConfig {
 
 export class UsageError extends Error {}
 
+/** The one-line usage shown on CLI errors and by `baton --help`. */
+export const USAGE = 'usage: baton [daemon] [--port N] [--data DIR]';
+
 const DEFAULT_PORT = 7600;
 
 /** The config file always lives at `~/.baton/config.toml`, wherever data_dir ends up pointing. */
@@ -60,7 +63,7 @@ export function resolveConfig(
   } catch (err) {
     // Unknown flags etc. (node:util parseArgs errors): a clean usage line,
     // not a stack trace — this is the "is the binary wired" path.
-    throw new UsageError(`${(err as Error).message} (usage: baton [daemon] [--port N] [--data DIR])`);
+    throw new UsageError(`${(err as Error).message} (${USAGE})`);
   }
 
   const positional = positionals[0];
