@@ -33,7 +33,7 @@ export const TASK_STATUSES: readonly TaskStatus[] = ['pending', 'active', 'waiti
  * That "any" also covers the closed pair: done -> dropped and dropped -> done
  * are legal; only reopen (-> pending) leaves the closed statuses otherwise.
  */
-const LEGAL_TARGETS: Record<TaskStatus, TaskStatus[]> = {
+export const LEGAL_TARGETS: Record<TaskStatus, TaskStatus[]> = {
   pending: ['active', 'waiting', 'done', 'dropped'],
   active: ['waiting', 'done', 'dropped'],
   waiting: ['active', 'done', 'dropped'],

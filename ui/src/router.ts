@@ -19,6 +19,7 @@ export function currentPath(): string {
 }
 
 const listeners = new Set<(path: string) => void>();
+let popstateBound = false;
 
 function notify(): void {
   const path = currentPath();
@@ -36,8 +37,15 @@ export function navigate(path: string): void {
 /** Subscribes to path changes; returns the unsubscribe function. */
 export function onPathChange(listener: (path: string) => void): () => void {
   listeners.add(listener);
-  window.addEventListener('popstate', notify);
+  if (!popstateBound) {
+    window.addEventListener('popstate', notify);
+    popstateBound = true;
+  }
   return () => {
     listeners.delete(listener);
+    if (listeners.size === 0 && popstateBound) {
+      window.removeEventListener('popstate', notify);
+      popstateBound = false;
+    }
   };
 }

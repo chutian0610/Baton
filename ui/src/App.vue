@@ -16,6 +16,7 @@ import { currentPath, navigate, onPathChange, parseRoute, type Route } from './r
 // Production provides neither: same-origin transport, fresh store.
 const injectedStore = inject<ReturnType<typeof createStore> | undefined>('store', undefined);
 const apiBase = inject<string>('apiBase', '');
+const detailPollMs = inject<number | undefined>('detailPollMs', undefined);
 const store = injectedStore ?? createStore({ api: createHttpApi(apiBase) });
 
 // T4/T5: the route parses from the URL at setup — deep links (/ui/tasks/:id)
@@ -46,21 +47,21 @@ const detailId = computed(() => (route.value.name === 'task' ? route.value.id : 
       :visibility="store.state.visibility"
       :tasks="store.state.tasks"
       :scope="store.state.scope"
-      :now="Date.now()"
+      :now="store.state.lastSync ?? 0"
       @change="store.setVisibility"
     />
     <NewTaskForm :scope="store.state.scope" @created="store.refresh()" />
     <main>
       <p v-if="store.state.loading && store.state.lastSync === null">Loading…</p>
       <p v-else-if="store.list.value.length === 0">No tasks in view.</p>
-      <TaskTree v-else :tasks="store.list.value" />
+      <TaskTree v-else :tasks="store.list.value" :now="store.state.lastSync ?? 0" />
     </main>
   </template>
 
   <template v-else>
     <main>
       <button type="button" class="back" @click="navigate('/ui')">← Back</button>
-      <TaskDetail :id="detailId" @mutated="store.refresh()" />
+      <TaskDetail :id="detailId" :poll-ms="detailPollMs ?? 5000" @mutated="store.refresh()" />
     </main>
   </template>
 </template>

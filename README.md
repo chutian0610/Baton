@@ -12,7 +12,7 @@ Baton gives every AI coding-agent session on one machine a shared, durable task 
 - **Specs**: GitHub issues #1 (v1) and #12 (v0.2 capture-first)
 - **Package**: [@chutian0610/baton](https://www.npmjs.com/package/@chutian0610/baton)
 
-**Documentation**: [MCP client setup](docs/mcp-clients.md) · [HTTP API reference](docs/http-api.md) · [Usage examples](docs/examples.md) · [Auto-start with launchd](docs/launchd.md)
+**Documentation**: [MCP client setup](docs/mcp-clients.md) · [HTTP API reference](docs/http-api.md) · [Web UI](docs/web-ui.md) · [Usage examples](docs/examples.md) · [Auto-start with launchd](docs/launchd.md)
 
 ## Install
 
@@ -44,10 +44,11 @@ baton daemon
 # {"event":"listening","address":"127.0.0.1","port":7600}
 ```
 
-It listens on `127.0.0.1:7600` and serves both surfaces:
+It listens on `127.0.0.1:7600` and serves all three surfaces:
 
 - HTTP JSON API: `http://127.0.0.1:7600/`
 - MCP (streamable HTTP): `http://127.0.0.1:7600/mcp`
+- Web UI (the human's dashboard): [http://127.0.0.1:7600/ui](http://127.0.0.1:7600/ui)
 
 Sanity check:
 
@@ -58,7 +59,7 @@ curl -s http://127.0.0.1:7600/healthz
 
 Stop it with Ctrl-C. There is no built-in service installation; for auto-start see [docs/launchd.md](docs/launchd.md).
 
-The MCP endpoint speaks streamable HTTP — client configuration for common hosts, the 11-tool surface, the full HTTP API reference, and a cookbook of query recipes live in the docs linked above. Start with [docs/examples.md](docs/examples.md) for the capture-first flow, progress/blocked semantics, agent provenance, and a query cookbook.
+The MCP endpoint speaks streamable HTTP — client configuration for common hosts, the 11-tool surface, the full HTTP API reference, and a cookbook of query recipes live in the docs linked above. Start with [docs/examples.md](docs/examples.md) for the capture-first flow, progress/blocked semantics, agent provenance, and a query cookbook. The Web UI at `/ui` is the human's window: [docs/web-ui.md](docs/web-ui.md).
 
 ## Configuration
 
@@ -91,6 +92,7 @@ Restoring is putting the file back and starting the daemon.
 
 Short version — `CONTEXT.md` is the normative glossary:
 
+- **Surface** — one of the three doors into the store: MCP (agents), the HTTP JSON API (curl/scripts), the Web UI (the human); a write is equally valid from any Surface and records its Actor
 - **Task** — a unit of work with a Status; nests into a single-parent tree (a milestone is just a parent Task)
 - **Unbound** — the state every Task starts in: its Project attribute is unset (`projectId: null`). `task_create` never consults `cwd` and never fails on project grounds — capture now, organize later. Unbound tasks nest and depend among themselves like any other tasks
 - **Project** — an attribute of a Task, not a container: at most one Project per Task, assigned explicitly (by name or id at create) or bound later with `PATCH {project}`. Assigning a Project to a Task assigns it to that Task's **whole subtree** — the default cascade; there is no single-task reassignment without the cascade. Trees may span Projects (decomposition is project-independent). A Project may also be bound to one or more local paths for `view=current` and `project_current` resolution

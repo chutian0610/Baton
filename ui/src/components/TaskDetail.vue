@@ -1,54 +1,111 @@
 <script setup lang="ts">
-import { computed, inject, ref, watch } from 'vue';
-import { createHttpApi, type Api } from '../api';
+import { computed, inject, onUnmounted, ref, watch } from 'vue';
+import { injectApi } from '../api';
+import { errorMessage, isoToLocal, localToIso, parseTags } from '../form';
 import { navigate } from '../router';
 import { legalTargets } from '../transitions';
-import type { TaskDetailPayload, TaskStatus } from '../types';
+import type { Actor, Change, TaskDetailPayload, TaskStatus } from '../types';
 
 /**
- * The task detail page (v0.3 T5 audit window + v0.3 T6 writes): every stored
- * field, the append-only annotation timeline, the recorded intervals,
- * dependencies read-only with their blocked state, and the change log with
- * Actor attribution — plus the human's write surface: machine-legal status
- * transitions, field editing, and annotations. Structural editing (reparent,
- * dependencies, project re-binding) is deliberately absent — agent work over
- * MCP (ADR-0006).
+ * The task detail page (v0.3 T5 audit window + T6 writes, hardened in the
+ * v0.3 review): every stored field, the append-only annotation timeline,
+ * the recorded intervals, dependencies read-only with their blocked state,
+ * and the FULL change log (paged) with Actor attribution — plus the human's
+ * write surface: machine-legal status transitions, field editing, and
+ * annotations. The page re-polls on an interval (paused while hidden) so an
+ * agent mutating the task cannot leave the audit window stale; structural
+ * editing (reparent, dependencies, project re-binding) is deliberately
+ * absent — agent work over MCP (ADR-0006).
  */
 
-const props = defineProps<{ id: number }>();
+const props = withDefaults(defineProps<{ id: number; pollMs?: number }>(), { pollMs: 5000 });
 
 const emit = defineEmits<{ mutated: [] }>();
 
-// Injectable for tests (the transport seam); production self-builds same-origin.
-const api = inject<Api | undefined>('api', undefined) ?? createHttpApi(inject<string>('apiBase', ''));
+const api = injectApi();
 
 const detail = ref<TaskDetailPayload | null>(null);
 const error = ref<string | null>(null);
 const actionError = ref<string | null>(null);
 
-async function load(id: number): Promise<void> {
-  detail.value = null;
-  error.value = null;
+// ------------------------------------------------------------ change log (paged)
+
+const changes = ref<Change[]>([]);
+const changesTotal = ref(0);
+const changesLoading = ref(false);
+
+async function loadChangesPage(): Promise<void> {
+  changesLoading.value = true;
   try {
-    detail.value = await api.getTask(id);
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err);
+    const page = await api.getChanges(props.id, 100, changes.value.length);
+    changes.value = changes.value.concat(page.changes);
+    changesTotal.value = page.total;
+  } finally {
+    changesLoading.value = false;
   }
 }
 
-watch(() => props.id, (id) => void load(id), { immediate: true });
+async function load(id: number, keepVisible = false): Promise<void> {
+  if (!keepVisible) {
+    detail.value = null;
+    changes.value = [];
+    changesTotal.value = 0;
+  }
+  error.value = null;
+  try {
+    detail.value = await api.getTask(id);
+    await loadChangesPage();
+  } catch (err) {
+    if (!keepVisible) {
+      error.value = errorMessage(err);
+    }
+  }
+}
+
+// Polling: the audit window follows the store (agents mutate while the
+// human watches); quiet reloads keep the current view until fresh data lands.
+const pollTimer = ref<ReturnType<typeof setInterval> | undefined>();
+
+function startPolling(): void {
+  stopPolling();
+  pollTimer.value = setInterval(() => {
+    if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+      void load(props.id, true);
+    }
+  }, props.pollMs);
+}
+
+function stopPolling(): void {
+  if (pollTimer.value !== undefined) {
+    clearInterval(pollTimer.value);
+    pollTimer.value = undefined;
+  }
+}
 
 /** Runs one write, reloads the detail, and tells the parent to refresh its list. */
 async function act(write: () => Promise<unknown>): Promise<void> {
   actionError.value = null;
   try {
     await write();
-    await load(props.id);
+    await load(props.id, true);
     emit('mutated');
   } catch (err) {
-    actionError.value = err instanceof Error ? err.message : String(err);
+    actionError.value = errorMessage(err);
   }
 }
+
+// The id watch runs the whole load chain, so it registers last — after every
+// ref and function it touches exists (immediate firing is synchronous).
+watch(
+  () => props.id,
+  (id) => {
+    void load(id);
+    startPolling();
+  },
+  { immediate: true },
+);
+
+onUnmounted(stopPolling);
 
 // ------------------------------------------------------------ transitions
 
@@ -68,44 +125,26 @@ const editEffort = ref('');
 const editDue = ref('');
 const editHiddenUntil = ref('');
 
-function toLocalInput(iso: string | null): string {
-  if (iso === null) {
-    return '';
-  }
-  const d = new Date(iso);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
 function startEditing(): void {
   const task = detail.value!.task;
   editTitle.value = task.title;
   editTags.value = task.tags.join(', ');
   editPriority.value = task.priority ?? '';
   editEffort.value = task.effort ?? '';
-  editDue.value = toLocalInput(task.due);
-  editHiddenUntil.value = toLocalInput(task.hiddenUntil);
+  editDue.value = isoToLocal(task.due);
+  editHiddenUntil.value = isoToLocal(task.hiddenUntil);
   editing.value = true;
-}
-
-function optionalIso(localValue: string): string | null | undefined {
-  return localValue === '' ? null : new Date(localValue).toISOString();
 }
 
 function saveEdits(): void {
   const body: Record<string, unknown> = {
     title: editTitle.value.trim(),
-    tags: editTags.value
-      .split(',')
-      .map((tag) => tag.trim().toLowerCase())
-      .filter((tag) => tag.length > 0),
+    tags: parseTags(editTags.value),
     priority: editPriority.value === '' ? null : editPriority.value,
     effort: editEffort.value === '' ? null : editEffort.value,
   };
-  const dueIso = optionalIso(editDue.value);
-  if (dueIso !== undefined) body.due = dueIso;
-  const hiddenIso = optionalIso(editHiddenUntil.value);
-  if (hiddenIso !== undefined) body.hiddenUntil = hiddenIso;
+  body.due = localToIso(editDue.value);
+  body.hiddenUntil = localToIso(editHiddenUntil.value);
   void act(async () => {
     await api.updateTask(props.id, body);
     editing.value = false;
@@ -127,12 +166,8 @@ function submitAnnotation(): void {
   });
 }
 
-function formatActor(actor: unknown): string {
-  const a = actor as { kind: string; clientName?: string; clientVersion?: string };
-  if (a.kind === 'mcp') {
-    return `mcp (${a.clientName ?? 'unknown'})`;
-  }
-  return a.kind;
+function formatActor(actor: Actor): string {
+  return actor.kind === 'mcp' ? `mcp (${actor.clientName ?? 'unknown'})` : actor.kind;
 }
 
 function formatWhen(iso: string): string {
@@ -145,7 +180,7 @@ function formatInterval(startedAt: string, endedAt: string | null): string {
 }
 
 /** Change rows without a field diff (the create row) describe themselves by the diff instead. */
-function describeDiff(change: { diff: Record<string, { before: unknown; after: unknown }> }): string {
+function describeDiff(change: Change): string {
   const parts = Object.entries(change.diff).map(
     ([field, delta]) => `${field}: ${JSON.stringify(delta.before)} → ${JSON.stringify(delta.after)}`,
   );
@@ -287,12 +322,20 @@ watch(
     </section>
 
     <section class="changes">
-      <h2>Change log <span class="meta">(last {{ detail.recentChanges.length }})</span></h2>
+      <h2>Change log <span class="meta">({{ changes.length }} of {{ changesTotal }})</span></h2>
       <ul>
-        <li v-for="change in detail.recentChanges" :key="change.id">
+        <li v-for="change in changes" :key="change.id">
           {{ formatWhen(change.createdAt) }} · {{ formatActor(change.actor) }} · {{ describeDiff(change) }}
         </li>
       </ul>
+      <button
+        v-if="changes.length < changesTotal"
+        type="button"
+        :disabled="changesLoading"
+        @click="loadChangesPage()"
+      >
+        Load {{ Math.min(100, changesTotal - changes.length) }} older
+      </button>
     </section>
   </article>
 
