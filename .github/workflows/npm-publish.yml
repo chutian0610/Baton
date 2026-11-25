@@ -1,8 +1,9 @@
 name: npm publish
 
 # Publishing follows the version tags: cutting a v* tag runs the full test
-# suite and publishes to npm. Requires the NPM_TOKEN repository secret
-# (an npm automation/granular token with publish rights to this package).
+# suite and publishes to npm via Trusted Publishing (OIDC) — no token secret
+# required. The package's Trusted Publisher settings on npmjs.com must list
+# this repository (chutian0610/Baton) and this workflow file (npm-publish.yml).
 
 on:
   push:
@@ -14,6 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write # OIDC: npm Trusted Publishing
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -22,6 +24,5 @@ jobs:
           registry-url: https://registry.npmjs.org/
       - run: npm ci
       - run: npm test
+      - run: npm install -g npm@latest # trusted publishing needs npm >= 11.5.1
       - run: npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
