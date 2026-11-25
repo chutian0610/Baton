@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, inject, onMounted, onUnmounted, ref } from 'vue';
 import ProjectPicker from './components/ProjectPicker.vue';
+import TaskDetail from './components/TaskDetail.vue';
 import TaskTree from './components/TaskTree.vue';
 import ViewTabs from './components/ViewTabs.vue';
 import VisibilityToggles from './components/VisibilityToggles.vue';
 import { createHttpApi } from './api';
 import { createStore } from './store';
-import { navigate, onPathChange, parseRoute, type Route } from './router';
+import { currentPath, navigate, onPathChange, parseRoute, type Route } from './router';
 
 // T3 wiring: the read spine starts polling on mount and stops on unmount.
 // Injectable for tests: a pre-built store (deterministic refresh awaits) or
@@ -16,9 +17,9 @@ const injectedStore = inject<ReturnType<typeof createStore> | undefined>('store'
 const apiBase = inject<string>('apiBase', '');
 const store = injectedStore ?? createStore({ api: createHttpApi(apiBase) });
 
-// T4: list views (Open / Today / Blocked, scoped by the picker, with the
-// visibility toggles). The task detail route renders fully in T5.
-const route = ref<Route>({ name: 'list' });
+// T4/T5: the route parses from the URL at setup — deep links (/ui/tasks/:id)
+// must render the detail on first paint, not just after pushState/popstate.
+const route = ref<Route>(parseRoute(currentPath()));
 const unsubscribe = onPathChange((path) => {
   route.value = parseRoute(path);
 });
@@ -56,8 +57,8 @@ const detailId = computed(() => (route.value.name === 'task' ? route.value.id : 
 
   <template v-else>
     <main>
-      <button type="button" @click="navigate('/ui')">← Back</button>
-      <p>Task detail for #{{ detailId }} — lands with T5.</p>
+      <button type="button" class="back" @click="navigate('/ui')">← Back</button>
+      <TaskDetail :id="detailId" />
     </main>
   </template>
 </template>
