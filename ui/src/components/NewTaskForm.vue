@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { inject, ref } from 'vue';
-import { createHttpApi, type Api } from '../api';
+import { ref } from 'vue';
+import { injectApi } from '../api';
+import { errorMessage, localToIso, parseTags } from '../form';
 import type { Scope } from '../views';
 
 /**
@@ -14,8 +15,7 @@ const props = defineProps<{ scope: Scope }>();
 
 const emit = defineEmits<{ created: [id: number] }>();
 
-// Injectable for tests (the transport seam); production self-builds same-origin.
-const api = inject<Api | undefined>('api', undefined) ?? createHttpApi(inject<string>('apiBase', ''));
+const api = injectApi();
 
 const title = ref('');
 const tags = ref('');
@@ -26,21 +26,6 @@ const hiddenUntil = ref('');
 const submitting = ref(false);
 const error = ref<string | null>(null);
 
-function optionalIso(localValue: string): string | undefined {
-  if (localValue === '') {
-    return undefined;
-  }
-  return new Date(localValue).toISOString();
-}
-
-function parseTags(raw: string): string[] | undefined {
-  const list = raw
-    .split(',')
-    .map((tag) => tag.trim().toLowerCase())
-    .filter((tag) => tag.length > 0);
-  return list.length === 0 ? undefined : list;
-}
-
 async function submit(): Promise<void> {
   if (title.value.trim() === '' || submitting.value) {
     return;
@@ -50,13 +35,13 @@ async function submit(): Promise<void> {
   try {
     const body: Record<string, unknown> = { title: title.value.trim() };
     const tagsList = parseTags(tags.value);
-    if (tagsList !== undefined) body.tags = tagsList;
+    if (tagsList.length > 0) body.tags = tagsList;
     if (priority.value !== '') body.priority = priority.value;
     if (effort.value !== '') body.effort = effort.value;
-    const dueIso = optionalIso(due.value);
-    if (dueIso !== undefined) body.due = dueIso;
-    const hiddenIso = optionalIso(hiddenUntil.value);
-    if (hiddenIso !== undefined) body.hiddenUntil = hiddenIso;
+    const dueIso = localToIso(due.value);
+    if (dueIso !== null) body.due = dueIso;
+    const hiddenIso = localToIso(hiddenUntil.value);
+    if (hiddenIso !== null) body.hiddenUntil = hiddenIso;
     // the picker's project is the only assignment path; 'all'/'unbound' means Unbound
     if (typeof props.scope === 'number') body.project = props.scope;
 
@@ -69,7 +54,7 @@ async function submit(): Promise<void> {
     hiddenUntil.value = '';
     emit('created', task.id);
   } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err);
+    error.value = errorMessage(err);
   } finally {
     submitting.value = false;
   }

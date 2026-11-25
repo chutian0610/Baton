@@ -18,10 +18,11 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/tasks': 'http://127.0.0.1:7600',
-      '/projects': 'http://127.0.0.1:7600',
-      '/healthz': 'http://127.0.0.1:7600',
-      '/mcp': 'http://127.0.0.1:7600',
+      // the daemon this dev server talks to: `BATON_PORT=7601 baton daemon`
+      '/tasks': `http://127.0.0.1:${process.env.BATON_PORT ?? 7600}`,
+      '/projects': `http://127.0.0.1:${process.env.BATON_PORT ?? 7600}`,
+      '/healthz': `http://127.0.0.1:${process.env.BATON_PORT ?? 7600}`,
+      '/mcp': `http://127.0.0.1:${process.env.BATON_PORT ?? 7600}`,
     },
   },
 });

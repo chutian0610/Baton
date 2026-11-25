@@ -62,9 +62,9 @@ function nodeWriteApi(base: string): Api {
     listTasks: reads.listTasks,
     listProjects: reads.listProjects,
     getTask: reads.getTask,
+    getChanges: reads.getChanges,
     createTask: (body) => send('POST', '/tasks', body),
     updateTask: (id, body) => send('PATCH', `/tasks/${id}`, body),
-    transitionTask: (id, verb) => send('POST', `/tasks/${id}/${verb}`, {}),
     annotate: (id, body) => send('POST', `/tasks/${id}/annotations`, { body }),
   };
 }

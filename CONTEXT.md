@@ -72,7 +72,7 @@ A timestamped, append-only note attached to a task; the channel through which ag
 _Avoid_: Comment, log entry, description
 
 **Actor**:
-The provenance recorded on every change: which surface performed it — an MCP client (with its session, when known) or a direct HTTP caller.
+The provenance recorded on every change: which surface performed it — an MCP client (with its session, when known), the Web UI, or a direct HTTP caller.
 
 **Change Log**:
 The append-only record of every mutation to every entity, with its Actor.

@@ -229,6 +229,7 @@ test('intervals render with their span and the total active time', async () => {
 
 test('the change log is newest-first with actor attribution across surfaces', async () => {
   const wrapper = await mountDetail(targetId);
+  await waitForSection(wrapper, 'Change log');
 
   const changes = section(wrapper, 'Change log');
   const text = changes.text();
@@ -254,5 +255,28 @@ test('navigation between tasks works from parent/child/dep links', async () => {
     'blocker detail rendered',
   );
   expect(window.location.pathname).toBe(`/ui/tasks/${blockerId}`);
+  await wrapper.unmount();
+});
+
+test('the detail window follows external mutations (polling refresh)', async () => {
+  // a 50ms detail poll so the test sees the refresh promptly
+  const wrapper = mount(App, {
+    global: { provide: { apiBase: daemon.baseUrl, detailPollMs: 50 } },
+  });
+  window.history.pushState({}, '', `/ui/tasks/${targetId}`);
+  window.dispatchEvent(new Event('popstate'));
+  await waitFor(() => wrapper.find('h1').exists(), 'detail rendered');
+  await waitForSection(wrapper, 'Change log');
+
+  // an agent mutates the task behind the human's back
+  const patch = await fetch(`${daemon.baseUrl}/tasks/${targetId}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ title: 'renamed by an agent mid-audit' }),
+  });
+  expect(patch.status).toBe(200);
+
+  // the window re-polls (50ms interval) and shows the new title unprompted
+  await waitFor(() => wrapper.find('h1').text() === 'renamed by an agent mid-audit', 'external rename visible');
   await wrapper.unmount();
 });

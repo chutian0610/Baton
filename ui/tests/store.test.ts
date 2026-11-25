@@ -34,6 +34,10 @@ function countingApi(inner: Api): Api & { count: () => number } {
       reads += 1;
       return inner.getTask(id);
     },
+    async getChanges(id, limit, offset) {
+      reads += 1;
+      return inner.getChanges(id, limit, offset);
+    },
     async createTask(body) {
       reads += 1;
       return inner.createTask(body);
@@ -41,10 +45,6 @@ function countingApi(inner: Api): Api & { count: () => number } {
     async updateTask(id, body) {
       reads += 1;
       return inner.updateTask(id, body);
-    },
-    async transitionTask(id, verb) {
-      reads += 1;
-      return inner.transitionTask(id, verb);
     },
     async annotate(id, body) {
       reads += 1;
@@ -142,9 +142,10 @@ test('a dead transport lands in state.error instead of throwing out of the loop'
     listTasks: () => fetch('http://127.0.0.1:9/tasks?view=all').then((r) => r.json()),
     listProjects: () => fetch('http://127.0.0.1:9/projects').then((r) => r.json()),
     getTask: (id: number) => fetch(`http://127.0.0.1:9/tasks/${id}`).then((r) => r.json()),
+    getChanges: (id: number, limit: number, offset: number) =>
+      fetch(`http://127.0.0.1:9/tasks/${id}/changes?limit=${limit}&offset=${offset}`).then((r) => r.json()),
     createTask: (body: Record<string, unknown>) => fetch('http://127.0.0.1:9/tasks', { method: 'POST', body: JSON.stringify(body) }).then((r) => r.json()),
     updateTask: (id: number, body: Record<string, unknown>) => fetch(`http://127.0.0.1:9/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(body) }).then((r) => r.json()),
-    transitionTask: (id: number, verb: string) => fetch(`http://127.0.0.1:9/tasks/${id}/${verb}`, { method: 'POST' }).then((r) => r.json()),
     annotate: (id: number, body: string) => fetch(`http://127.0.0.1:9/tasks/${id}/annotations`, { method: 'POST', body: JSON.stringify({ body }) }).then((r) => r.json()),
   };
   const store = createStore({ api: dead, storage: mapStorage() });

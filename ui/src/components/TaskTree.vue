@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { navigate } from '../router';
+import { isHiddenNow } from '../views';
 import type { Task } from '../types';
 
 /**
@@ -8,10 +9,12 @@ import type { Task } from '../types';
  * nesting — a task is indented one level per ancestor that is also visible.
  * Rows follow the derived order verbatim (due/priority/id), so a child may
  * appear before its parent when it sorts earlier; the indent carries the
- * structure. Every row links into the task detail route.
+ * structure. Every row links into the task detail route. The `hidden` badge
+ * applies only while the hide is actually in force (isHiddenNow), matching
+ * the derivation — not merely "has a hidden_until field".
  */
 
-const props = defineProps<{ tasks: Task[] }>();
+const props = defineProps<{ tasks: Task[]; now: number }>();
 
 interface Row {
   task: Task;
@@ -35,14 +38,6 @@ const rows = computed<Row[]>(() => {
   });
 });
 
-const STATUS_LABEL: Record<Task['status'], string> = {
-  pending: 'pending',
-  active: 'active',
-  waiting: 'waiting',
-  done: 'done',
-  dropped: 'dropped',
-};
-
 function dueLabel(task: Task): string {
   if (task.due === null) {
     return '';
@@ -63,9 +58,9 @@ function dueLabel(task: Task): string {
       <button type="button" class="task-link" @click="navigate(`/ui/tasks/${row.task.id}`)">
         {{ row.task.title }}
       </button>
-      <span class="badge" :class="`badge-${row.task.status}`">{{ STATUS_LABEL[row.task.status] }}</span>
+      <span class="badge" :class="`badge-${row.task.status}`">{{ row.task.status }}</span>
       <span v-if="row.task.blocked" class="badge badge-blocked">blocked</span>
-      <span v-if="row.task.hiddenUntil !== null" class="badge badge-soft">hidden</span>
+      <span v-if="row.task.hiddenUntil !== null && isHiddenNow(row.task, now)" class="badge badge-soft">hidden</span>
       <span v-if="row.task.progress !== null" class="progress">{{ Math.round(row.task.progress * 100) }}%</span>
       <span v-if="row.task.priority" class="badge badge-soft">{{ row.task.priority }}</span>
       <span v-if="row.task.due !== null" class="meta">{{ dueLabel(row.task) }}</span>

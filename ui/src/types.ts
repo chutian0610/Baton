@@ -40,12 +40,30 @@ export interface Project {
   openTaskCount: number;
 }
 
+/** The Actor union, mirrored from the daemon (src/actors.ts). */
+export type Actor = HttpActor | McpActor | WebActor;
+
+export interface HttpActor {
+  kind: 'http';
+}
+
+export interface WebActor {
+  kind: 'web';
+}
+
+export interface McpActor {
+  kind: 'mcp';
+  clientName: string;
+  clientVersion?: string;
+  sessionId?: string;
+}
+
 /** An append-only annotation as returned inside GET /tasks/:id. */
 export interface Annotation {
   id: number;
   taskId: number;
   body: string;
-  actor: unknown;
+  actor: Actor;
   createdAt: string;
 }
 
@@ -54,7 +72,7 @@ export interface Change {
   id: number;
   entity: string;
   entityId: number;
-  actor: unknown;
+  actor: Actor;
   createdAt: string;
   diff: Record<string, { before: unknown; after: unknown }>;
 }
