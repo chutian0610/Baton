@@ -1048,25 +1048,25 @@ blockquote {
 .pill-active {
   background: var(--accent-dim);
   border-color: var(--accent-dim);
-  color: var(--accent);
+  color: #7ddcf5;
 }
 
 .pill-waiting {
   background: rgb(227 185 61 / 12%);
   border-color: rgb(227 185 61 / 35%);
-  color: var(--waiting);
+  color: #fde68a;
 }
 
 .pill-done {
   background: rgb(74 222 128 / 10%);
   border-color: rgb(74 222 128 / 30%);
-  color: var(--ok);
+  color: #86efac;
 }
 
 .pill-dropped {
   background: rgb(248 113 113 / 10%);
   border-color: rgb(248 113 113 / 30%);
-  color: var(--danger);
+  color: #fca5a5;
 }
 
 .transition-pill:hover:not(:disabled) {
@@ -1380,6 +1380,14 @@ button:hover:not(:disabled) {
 button:disabled {
   opacity: 0.45;
   cursor: default;
+}
+
+button:focus-visible,
+.link:focus-visible,
+.nav-item:focus-visible,
+.prop-value:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 button.primary,

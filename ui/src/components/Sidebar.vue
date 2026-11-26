@@ -88,7 +88,7 @@ const VIEWS: { name: ViewName; label: string }[] = [
   { name: 'blocked', label: 'Blocked' },
 ];
 
-const PALETTE = ['#d4713d', '#3d8fd4', '#7a5ad4', '#d43d8f', '#2f8f5b', '#c73a3a', '#8a6d00', '#3da3a3'];
+const PALETTE = ['#4cc9f0', '#f472b6', '#a78bfa', '#34d399', '#fbbf24', '#f87171', '#38bdf8', '#fb923c'];
 
 function colorFor(id: number): string {
   return PALETTE[id % PALETTE.length]!;
