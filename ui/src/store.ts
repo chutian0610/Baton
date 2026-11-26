@@ -1,6 +1,6 @@
 import { computed, reactive, type Ref } from 'vue';
 import { createHttpApi, type Api } from './api';
-import { deriveList, type Scope, type ViewName, type Visibility } from './views';
+import { buildTree, countViews, type Scope, type TaskNode, type ViewCounts, type ViewName, type Visibility } from './views';
 import type { Project, Task } from './types';
 
 /**
@@ -73,9 +73,13 @@ export interface Store {
     view: ViewName;
     scope: Scope;
     visibility: Visibility;
+    /** Ids of tree nodes currently expanded (session-scoped, not persisted). */
+    expanded: Set<number>;
   };
-  /** The derived list for the current view/scope/visibility. */
-  list: Ref<Task[]>;
+  /** The derived tree for the current view/scope/visibility/expanded set. */
+  tree: Ref<TaskNode[]>;
+  /** Sidebar counts for the current scope. */
+  counts: Ref<ViewCounts>;
   refresh(): Promise<void>;
   /** One polling step: fetch unless the tab is hidden. */
   tick(): void;
@@ -84,6 +88,7 @@ export interface Store {
   setView(view: ViewName): void;
   setScope(scope: Scope): void;
   setVisibility(visibility: Visibility): void;
+  toggleExpanded(id: number): void;
 }
 
 export function createStore(options: StoreOptions = {}): Store {
@@ -109,6 +114,7 @@ export function createStore(options: StoreOptions = {}): Store {
     view: 'open' as ViewName,
     scope: 'all' as Scope,
     visibility: { showHidden: false, showDone: false, showDropped: false },
+    expanded: new Set<number>(),
   });
 
   const restored = parseScope(storage?.getItem(SCOPE_KEY) ?? null);
@@ -116,9 +122,17 @@ export function createStore(options: StoreOptions = {}): Store {
     state.scope = restored;
   }
 
-  const list = computed(() =>
-    deriveList(state.tasks, { view: state.view, scope: state.scope, visibility: state.visibility, now: now() }),
+  const tree = computed(() =>
+    buildTree(state.tasks, {
+      view: state.view,
+      scope: state.scope,
+      visibility: state.visibility,
+      now: now(),
+      expanded: state.expanded,
+    }),
   );
+
+  const counts = computed(() => countViews(state.tasks, state.scope, now()));
 
   async function refresh(): Promise<void> {
     state.loading = true;
@@ -145,7 +159,8 @@ export function createStore(options: StoreOptions = {}): Store {
 
   return {
     state,
-    list,
+    tree,
+    counts,
     refresh,
     tick,
     start() {
@@ -167,6 +182,13 @@ export function createStore(options: StoreOptions = {}): Store {
     },
     setVisibility(visibility: Visibility) {
       state.visibility = visibility;
+    },
+    toggleExpanded(id: number) {
+      if (state.expanded.has(id)) {
+        state.expanded.delete(id);
+      } else {
+        state.expanded.add(id);
+      }
     },
   };
 }

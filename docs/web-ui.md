@@ -4,44 +4,58 @@ Start the daemon and open [http://127.0.0.1:7600/ui](http://127.0.0.1:7600/ui) �
 
 ## Who it is for
 
-Baton's surfaces each have one audience (ADR-0006, `CONTEXT.md` → Surface): agents write and read over MCP; scripts and curl use the HTTP JSON API; the **Web UI is the human's window into the shared store** — and the human's direct write path for corrections (drop a junk task, close finished work, fix a field) without detouring through conversation with an agent.
+Baton's surfaces each have one audience (ADR-0006, `CONTEXT.md` → Surface): agents write and read over MCP; scripts and curl use the HTTP JSON API; the **Web UI is the human's window into the shared store** — and the human's direct write path for capture and corrections, without detouring through conversation with an agent.
 
-## Views
+## Layout
 
-Three entry views sit above the task tree, plus an explicit **project picker**:
+Three panes (Todoist-style, light):
 
-- **Open** — every open task across the store (Unbound ones included; capture-first)
+- **Sidebar** — the three views with live counts (**Open / Today / Blocked**) and the **Projects** section (All projects / Unbound / each project with a stable color dot and its open-task count). Selecting here is the scope for everything to the right.
+- **Main list** — a quick-add bar, a slim toggle row, and the **task tree**.
+- **Detail panel** — clicking a task's title (or deep-linking to `/ui/tasks/<id>`) slides in the audit window next to the list; `✕` closes it.
+
+## Views and scoping
+
+- **Open** — every open task across the scope (Unbound ones included; capture-first)
 - **Today** — open tasks due today or overdue
 - **Blocked** — open tasks whose derived `blocked` flag is true
 
-A browser has no working directory, so **Current Project resolution does not apply** to the Web UI: scoping is the picker's explicit selection — All projects / Unbound / one project — remembered across reloads.
+A browser has no working directory, so **Current Project resolution does not apply** to the Web UI: scoping is the sidebar's explicit selection, remembered across reloads.
 
 ### Visibility toggles
 
 The default views hide `done`, `dropped`, and tasks whose `hidden_until` is still in the future — rules built for an agent's attention, not a supervisor's. The toggles re-add each set on top of any view, with live counts and distinguishing badges, so agent decisions never erase information from the observer: **show done**, **show dropped**, **show hidden**.
 
-## Task detail
+## The task tree (nested tasks)
 
-Click any task (or deep-link straight to `/ui/tasks/<id>`) for the audit window:
+Tasks nest as a single-parent tree, and the list shows it:
 
-- every stored field (status, project/Unbound, priority, effort, due, hidden-until, parent, tags), derived `blocked` and parent `progress`
+- A task with children wears an **expand chevron** and a **count chip**; expanding reveals its children **indented, recursively** (grandchildren included). Collapse state is per session.
+- **An expanded parent brings all its open children regardless of the current view** — a parent surfaced by Today still shows its not-due children under it. Tasks whose parent chain is not visible surface at top level instead of disappearing.
+- **Add subtask**: every expanded parent has an inline input at the bottom of its children. The created child inherits the parent's project at create time (an Unbound parent yields an Unbound child). This is capture-with-structure per the ADR-0006 amendment.
+- **Completion circle**: one click closes a task (`done`), one click on a done task reopens it (`pending`) — the two machine-legal directions a single control can safely offer. Every other transition lives in the detail panel.
+- **Re-parenting existing tasks, drag-and-drop reordering, dependency editing, and project cascade re-binding are deliberately absent** — re-organization is agent work over MCP (ADR-0006 amendment).
+
+## Quick add
+
+The quick-add bar captures a top-level task with Enter — Unbound under All/Unbound, into the selected project when one is picked (the only assignment path). The `▾` toggle folds out optional fields: tags, priority, effort, due, hidden-until.
+
+## Task detail panel
+
+The audit window, next to the list:
+
+- every stored field (status, project/Unbound, priority, effort, due, hidden-until, parent, tags), derived `blocked` and parent `progress`, children with statuses
 - **dependencies read-only** with their status and blocked state
-- the **annotation timeline**, newest first, attributed to its Actor
+- the **annotation timeline**, newest first, attributed to its Actor, with an append-only input
 - **intervals** — every recorded span of the task being active, plus total active time
-- the **change log** — what changed, when, and which surface did it: `web` (this UI), `http` (curl/scripts), or `mcp (<client name>)` (an agent session). The first 100 rows load with the page; older history loads on demand.
+- the **change log** — what changed, when, and which surface did it: `web` (this UI), `http` (curl/scripts), or `mcp (<client name>)` (an agent session). The first 100 rows load with the panel; older history loads on demand.
+- **status transitions** — only the machine-legal targets are offered (`ui/src/transitions.ts` mirrors the matrix; the daemon validates), plus field editing for title/tags/priority/effort/due/hidden-until.
 
-The window re-polls every few seconds, so an agent mutating the task mid-audit is visible without re-navigation.
+The panel re-polls on its own (paused while hidden), so an agent mutating the task mid-audit is visible without re-navigation.
 
-## Writes
+## Writes and the web Actor
 
-The UI writes like any other surface — every change is recorded in the change log under the `web` Actor:
-
-- **Create** — title plus optional fields; defaults Unbound; when the picker scopes a project, that project is the assignment. No parent input.
-- **Edit fields** — title, tags, priority, effort, due, hidden-until.
-- **Status transitions** — only the machine-legal targets are offered (the daemon validates; `ui/src/transitions.ts` mirrors the matrix).
-- **Annotate** — append-only, like every annotation.
-
-**Structural editing — reparenting, dependency editing, project re-binding/cascade — is deliberately absent.** Trees and dependency DAGs are agent work over MCP; a browser DAG editor costs more than it buys (ADR-0006).
+Every UI write is recorded in the change log under the **`web` Actor** — distinct from `http` and `mcp` rows, so provenance separates the human's clicks from scripts and agent sessions.
 
 ## Security posture
 
@@ -51,4 +65,4 @@ The UI writes like any other surface — every change is recorded in the change 
 
 ## Refresh
 
-The UI polls `GET /tasks?view=all` every few seconds and derives the views client-side. Polling pauses while the tab is hidden. There is no event stream — hooks/events remain deferred (spec: revisit when a real pain appears).
+The list polls `GET /tasks?view=all` every few seconds and derives the tree client-side; the detail panel polls its own payload. Both pause while the tab is hidden. There is no event stream — hooks/events remain deferred (spec: revisit when a real pain appears).
