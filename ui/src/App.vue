@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, inject, onMounted, onUnmounted, provide, ref } from 'vue';
 import NewTaskForm from './components/NewTaskForm.vue';
+import FilterDropdown from './components/FilterDropdown.vue';
 import Sidebar from './components/Sidebar.vue';
 import TaskDetail from './components/TaskDetail.vue';
 import TaskTree from './components/TaskTree.vue';
-import VisibilityToggles from './components/VisibilityToggles.vue';
 import { createHttpApi } from './api';
 import { createStore } from './store';
 import { currentPath, navigate, onPathChange, parseRoute, type Route } from './router';
@@ -51,7 +51,7 @@ const detailId = computed(() => (route.value.name === 'task' ? route.value.id : 
 
     <main class="main">
       <div class="list-toolbar">
-        <VisibilityToggles
+        <FilterDropdown
           :visibility="store.state.visibility"
           :tasks="store.state.tasks"
           :scope="store.state.scope"

@@ -100,6 +100,16 @@ test('the sidebar shows views with counts and switches the active view', async (
   expect(rowTitles(wrapper)).toContain('parent tree node');
   expect(rowTitles(wrapper)).not.toContain('finished thing');
 
+  // the filter dropdown: a zero-count option toggles nothing — it states the
+  // empty set by being disabled; the button carries no active badge yet
+  expect(wrapper.find('.filter-badge').exists()).toBe(false);
+  await wrapper.find('.filter-button').trigger('click');
+  await wrapper.vm.$nextTick();
+  const hiddenOption = wrapper.findAll('.filter-option').find((node) => node.text().startsWith('Hidden'))!;
+  expect(hiddenOption.find('input').attributes('disabled')).toBeDefined();
+  await wrapper.find('.filter-button').trigger('click'); // close again
+  await wrapper.vm.$nextTick();
+
   await sidebarItem(wrapper, 'Today').trigger('click');
   await wrapper.vm.$nextTick();
   // the overdue child matches Today; its parent does not — the child renders
@@ -232,10 +242,13 @@ test('the completion circle closes a task, and reopens it via the showDone toggl
   }[];
   expect(all.find((task) => task.title === 'unbound stray')!.status).toBe('done');
 
-  // showDone surfaces it again — with the filled circle
-  const doneToggle = wrapper.findAll('.filter-chip').find((node) => node.text().startsWith('done'))!;
-  await doneToggle.find('input').setValue(true);
+  // showDone surfaces it again — with the filled circle (via the filter dropdown)
+  await wrapper.find('.filter-button').trigger('click');
   await wrapper.vm.$nextTick();
+  const doneOption = wrapper.findAll('.filter-option').find((node) => node.text().startsWith('Done'))!;
+  await doneOption.find('input').setValue(true);
+  await wrapper.vm.$nextTick();
+  expect(wrapper.find('.filter-badge').text()).toBe('1'); // the button wears the active count
   const doneRow = () => wrapper.findAll('.task-row').find((node) => node.find('.title').text() === 'unbound stray')!;
   await waitFor(() => doneRow().find('.check').classes().includes('done'), 'done row visible with filled circle');
 
