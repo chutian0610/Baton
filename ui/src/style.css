@@ -611,8 +611,10 @@ body {
   padding: 0;
 }
 
-.task-branch .children {
-  padding: 0;
+.task-branch > .children {
+  margin-left: 1.15rem;
+  border-left: 2px solid var(--border);
+  padding-left: 0.45rem;
 }
 
 .task-row {
