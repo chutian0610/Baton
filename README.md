@@ -5,14 +5,19 @@
 ![node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 
-Baton gives every AI coding-agent session on one machine a shared, durable task store. A single daemon, bound to `127.0.0.1` only, serves a plain HTTP JSON API as its core and a thin MCP adapter (streamable HTTP) on top, so several agent sessions — and a terminal with `curl` — all read and write the same store. Capture-first: every task starts Unbound, and binding it to a Project is an explicit, subtree-wide act. Tasks nest as a single-parent tree (across Projects freely), ordering is a dependency DAG within a Project's scope, and every change is recorded in an append-only change log with the client that made it. All state lives in one SQLite database under `~/.baton/`.
+**One shared, durable task store for every AI coding-agent session on your machine.**
+
+- **Multiple agent sessions, one store** — a single daemon bound to `127.0.0.1`, so several agents and your terminal all read and write the same tasks
+- **Three surfaces** — MCP (streamable HTTP) for agents, a plain HTTP JSON API for scripts, and a built-in **Web UI dashboard** for you
+- **Capture-first** — every task starts Unbound; binding to a Project is an explicit, subtree-wide act. Tasks nest as a single-parent tree, ordering is a dependency DAG, and every change is recorded in an append-only change log with the surface that made it
+- **SQLite-backed** — all state in one file under `~/.baton/`
+
+**Documentation**: [MCP client setup](docs/mcp-clients.md) · [HTTP API reference](docs/http-api.md) · [Web UI](docs/web-ui.md) · [Usage examples](docs/examples.md) · [Auto-start with launchd](docs/launchd.md)
 
 - **Domain glossary (normative)**: `CONTEXT.md`
 - **Architecture decisions**: `docs/adr/`
-- **Specs**: GitHub issues #1 (v1) and #12 (v0.2 capture-first)
+- **Specs**: GitHub issues #1 (v1), #12 (v0.2 capture-first), #22 (v0.3 Web UI)
 - **Package**: [@chutian0610/baton](https://www.npmjs.com/package/@chutian0610/baton)
-
-**Documentation**: [MCP client setup](docs/mcp-clients.md) · [HTTP API reference](docs/http-api.md) · [Web UI](docs/web-ui.md) · [Usage examples](docs/examples.md) · [Auto-start with launchd](docs/launchd.md)
 
 ## Install
 
