@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
-import { countViews, OPEN_STATUSES, type Scope, type StatusFilterState } from '../views';
+import type { Scope, StatusFilterState } from '../views';
 import type { Task, TaskStatus } from '../types';
 
 /**
- * The status dropdown (GitHub "Types" style): multi-select over the five
- * statuses with colored dots and live counts, narrowing the Open tab
- * (pending / active / waiting); the archive statuses (done / dropped) are
- * listed disabled with a pointer to their tabs. "Show hidden" sits below a
- * divider — it is a time mask, not a status. Closes on outside click and
- * Escape; only rendered while the Open tab is active.
+ * The status dropdown (GitHub "Types" style): multi-select over the Open
+ * tab's own statuses (pending / active / waiting) with colored dots and
+ * live in-scope counts. The archive statuses (done / dropped) are NOT
+ * listed — they belong to their tabs, and dead disabled rows read as a
+ * broken UI. "Show hidden" sits below a divider (a time mask, not a
+ * status). The last checked option cannot be unchecked — the Open tab never
+ * goes empty via the dropdown. Closes on outside click and Escape; only
+ * rendered while the Open tab is active.
  */
 
 const props = defineProps<{
@@ -27,30 +29,13 @@ const emit = defineEmits<{
 const open = ref(false);
 const root = ref<HTMLElement | null>(null);
 
-const counts = computed(() => countViews(props.tasks, props.scope, props.now));
-
-const STATUS_META: { status: TaskStatus; label: string }[] = [
-  { status: 'pending', label: 'Pending' },
-  { status: 'active', label: 'Active' },
-  { status: 'waiting', label: 'Waiting' },
-  { status: 'done', label: 'Done' },
-  { status: 'dropped', label: 'Dropped' },
+const STATUS_META: { status: TaskStatus; label: string; sub: string }[] = [
+  { status: 'pending', label: 'Pending', sub: 'waiting to start' },
+  { status: 'active', label: 'Active', sub: 'being worked on' },
+  { status: 'waiting', label: 'Waiting', sub: 'parked for later' },
 ];
 
-function countOf(status: TaskStatus): number {
-  if (OPEN_STATUSES.includes(status)) {
-    return counts.value.open;
-  }
-  return status === 'done' ? counts.value.done : counts.value.dropped;
-}
-
-/** Per-status counts for the Open composite statuses need a finer count than countViews gives. */
-function openStatusCount(status: TaskStatus): number {
-  const scoped = applyScopeLocal();
-  return scoped.filter((task) => task.status === status).length;
-}
-
-function applyScopeLocal(): Task[] {
+function scopedTasks(): Task[] {
   if (props.scope === 'all') {
     return props.tasks;
   }
@@ -60,24 +45,22 @@ function applyScopeLocal(): Task[] {
   return props.tasks.filter((task) => task.projectId === props.scope);
 }
 
+function countOf(status: TaskStatus): number {
+  return scopedTasks().filter((task) => task.status === status).length;
+}
+
+/** The last checked option stays checked — the Open tab never goes empty via the dropdown. */
 function optionDisabled(status: TaskStatus): boolean {
-  if (!OPEN_STATUSES.includes(status)) {
-    return true; // archive statuses belong to their tabs
-  }
   const explicit = props.status.statuses;
-  return explicit !== null && explicit.length === 1 && explicit[0] === status && props.status.statuses !== null;
+  return explicit !== null && explicit.length === 1 && explicit[0] === status;
 }
 
 function checked(status: TaskStatus): boolean {
-  if (OPEN_STATUSES.includes(status)) {
-    return props.status.statuses === null || props.status.statuses.includes(status);
-  }
-  return false;
+  return props.status.statuses === null || props.status.statuses.includes(status);
 }
 
-function toggle(status: TaskStatus, event: Event): void {
+function toggle(status: TaskStatus): void {
   emit('toggle-status', status);
-  void event;
 }
 
 function onDocumentClick(event: MouseEvent): void {
@@ -118,12 +101,13 @@ onUnmounted(() => {
         :key="meta.status"
         class="filter-option"
         :class="{ disabled: optionDisabled(meta.status) }"
+        :title="`Show only ${meta.label.toLowerCase()} tasks`"
       >
-        <input type="checkbox" :checked="checked(meta.status)" :disabled="optionDisabled(meta.status)" @change="toggle(meta.status, $event)" />
+        <input type="checkbox" :checked="checked(meta.status)" :disabled="optionDisabled(meta.status)" @change="toggle(meta.status)" />
         <span class="status-dot" :class="`status-dot-${meta.status}`" />
         <span class="filter-option-body">
           <span class="filter-option-label">{{ meta.label }}</span>
-          <span class="filter-option-sub">{{ openStatusCount(meta.status) }} in scope</span>
+          <span class="filter-option-sub">{{ countOf(meta.status) }} in scope · {{ meta.sub }}</span>
         </span>
       </label>
       <div class="filter-divider" />
