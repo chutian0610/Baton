@@ -100,13 +100,13 @@ test('the sidebar shows views with counts and switches the active view', async (
   expect(rowTitles(wrapper)).toContain('parent tree node');
   expect(rowTitles(wrapper)).not.toContain('finished thing');
 
-  // the filter dropdown: a zero-count option toggles nothing — it states the
-  // empty set by being disabled; the button carries no active badge yet
+  // the status dropdown: archive statuses are disabled (their tabs own them),
+  // and the button carries no active badge while no explicit filter is set
   expect(wrapper.find('.filter-badge').exists()).toBe(false);
   await wrapper.find('.filter-button').trigger('click');
   await wrapper.vm.$nextTick();
-  const hiddenOption = wrapper.findAll('.filter-option').find((node) => node.text().startsWith('Hidden'))!;
-  expect(hiddenOption.find('input').attributes('disabled')).toBeDefined();
+  const doneOption = wrapper.findAll('.filter-option').find((node) => node.text().startsWith('Done'))!;
+  expect(doneOption.find('input').attributes('disabled')).toBeDefined();
   await wrapper.find('.filter-button').trigger('click'); // close again
   await wrapper.vm.$nextTick();
 
@@ -242,22 +242,20 @@ test('the completion circle closes a task, and reopens it via the showDone toggl
   }[];
   expect(all.find((task) => task.title === 'unbound stray')!.status).toBe('done');
 
-  // showDone surfaces it again — with the filled circle (via the filter dropdown)
-  await wrapper.find('.filter-button').trigger('click');
+  // the Done status tab surfaces it again — with the filled circle
+  await wrapper.findAll('.status-tab').find((node) => node.text().startsWith('Done'))!.trigger('click');
   await wrapper.vm.$nextTick();
-  const doneOption = wrapper.findAll('.filter-option').find((node) => node.text().startsWith('Done'))!;
-  await doneOption.find('input').setValue(true);
-  await wrapper.vm.$nextTick();
-  expect(wrapper.find('.filter-badge').text()).toBe('1'); // the button wears the active count
   const doneRow = () => wrapper.findAll('.task-row').find((node) => node.find('.title').text() === 'unbound stray')!;
-  await waitFor(() => doneRow().find('.check').classes().includes('done'), 'done row visible with filled circle');
+  await waitFor(() => doneRow().find('.check').classes().includes('done'), 'done row visible on the Done tab');
 
-  // the same circle reopens it: pending again, and the row stays (now open)
+  // the same circle reopens it: pending again — which moves it off the Done
+  // tab; back on Open it is visible with an open circle
   await doneRow().find('.check').trigger('click');
-  await waitFor(
-    () => doneRow().find('.check').classes().includes('done') === false,
-    'task reopened in place',
-  );
+  await wrapper.findAll('.status-tab').find((node) => node.text().startsWith('Open'))!.trigger('click');
+  await waitFor(() => {
+    const reopened = wrapper.findAll('.task-row').find((node) => node.find('.title').text() === 'unbound stray');
+    return reopened !== undefined && !reopened.find('.check').classes().includes('done');
+  }, 'task reopened on the Open tab');
   const after = (await (await fetch(`${daemon.baseUrl}/tasks?view=all`)).json()).tasks as {
     title: string;
     status: string;

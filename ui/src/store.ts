@@ -1,7 +1,17 @@
 import { computed, reactive, type Ref } from 'vue';
 import { createHttpApi, type Api } from './api';
-import { buildTree, countViews, type Scope, type TaskNode, type ViewCounts, type ViewName, type Visibility } from './views';
-import type { Project, Task } from './types';
+import {
+  buildTree,
+  countViews,
+  OPEN_STATUSES,
+  type Scope,
+  type StatusFilterState,
+  type StatusTab,
+  type TaskNode,
+  type ViewCounts,
+  type ViewName,
+} from './views';
+import type { Project, Task, TaskStatus } from './types';
 
 /**
  * The polling store (v0.3 T3): one reactive state over the read spine.
@@ -72,7 +82,8 @@ export interface Store {
     lastSync: number | null;
     view: ViewName;
     scope: Scope;
-    visibility: Visibility;
+    /** The GitHub-style status filter: active tab, explicit Open-tab statuses, hidden gate. */
+    status: StatusFilterState;
     /** Ids of tree nodes currently expanded (session-scoped, not persisted). */
     expanded: Set<number>;
     /** Search query: substring over title/tags, narrowing the current view. */
@@ -89,7 +100,9 @@ export interface Store {
   stop(): void;
   setView(view: ViewName): void;
   setScope(scope: Scope): void;
-  setVisibility(visibility: Visibility): void;
+  setStatusTab(tab: StatusTab): void;
+  toggleStatusInFilter(status: TaskStatus): void;
+  setShowHidden(show: boolean): void;
   setQuery(query: string): void;
   toggleExpanded(id: number): void;
 }
@@ -116,7 +129,7 @@ export function createStore(options: StoreOptions = {}): Store {
     lastSync: null as number | null,
     view: 'open' as ViewName,
     scope: 'all' as Scope,
-    visibility: { showHidden: false, showDone: false, showDropped: false },
+    status: { tab: 'open', statuses: null, showHidden: false } as StatusFilterState,
     expanded: new Set<number>(),
     query: '',
   });
@@ -130,7 +143,7 @@ export function createStore(options: StoreOptions = {}): Store {
     buildTree(state.tasks, {
       view: state.view,
       scope: state.scope,
-      visibility: state.visibility,
+      status: state.status,
       now: now(),
       expanded: state.expanded,
       query: state.query,
@@ -185,8 +198,17 @@ export function createStore(options: StoreOptions = {}): Store {
       state.scope = scope;
       storage?.setItem(SCOPE_KEY, serializeScope(scope));
     },
-    setVisibility(visibility: Visibility) {
-      state.visibility = visibility;
+    setStatusTab(tab: StatusTab) {
+      state.status.tab = tab;
+    },
+    toggleStatusInFilter(status: TaskStatus) {
+      // null means "all of the tab's statuses"; the first toggle flips to an explicit set
+      const current = state.status.statuses ?? (state.status.tab === 'open' ? [...OPEN_STATUSES] : []);
+      const next = current.includes(status) ? current.filter((entry) => entry !== status) : [...current, status];
+      state.status.statuses = next.length === 0 || next.length === (state.status.tab === 'open' ? OPEN_STATUSES.length : 1) ? null : next;
+    },
+    setShowHidden(show: boolean) {
+      state.status.showHidden = show;
     },
     setQuery(query: string) {
       state.query = query;
