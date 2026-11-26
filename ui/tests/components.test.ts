@@ -100,13 +100,13 @@ test('the sidebar shows views with counts and switches the active view', async (
   expect(rowTitles(wrapper)).toContain('parent tree node');
   expect(rowTitles(wrapper)).not.toContain('finished thing');
 
-  // the status dropdown: archive statuses are disabled (their tabs own them),
-  // and the button carries no active badge while no explicit filter is set
+  // the status dropdown: only the Open tab's own statuses are offered — the
+  // archive statuses live on their tabs, not as dead disabled rows here
   expect(wrapper.find('.filter-badge').exists()).toBe(false);
   await wrapper.find('.filter-button').trigger('click');
   await wrapper.vm.$nextTick();
-  const doneOption = wrapper.findAll('.filter-option').find((node) => node.text().startsWith('Done'))!;
-  expect(doneOption.find('input').attributes('disabled')).toBeDefined();
+  const optionLabels = wrapper.findAll('.filter-option .filter-option-label').map((node) => node.text());
+  expect(optionLabels).toEqual(['Pending', 'Active', 'Waiting', 'Show hidden']);
   await wrapper.find('.filter-button').trigger('click'); // close again
   await wrapper.vm.$nextTick();
 
