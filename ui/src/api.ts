@@ -31,6 +31,7 @@ export interface Api {
   createTask(body: Record<string, unknown>): Promise<{ task: Task }>;
   updateTask(id: number, body: Record<string, unknown>): Promise<{ task: Task }>;
   annotate(id: number, body: string): Promise<{ annotation: unknown }>;
+  createProject(body: Record<string, unknown>): Promise<{ project: Project }>;
 }
 
 export function createHttpApi(base = ''): Api {
@@ -60,6 +61,7 @@ export function createHttpApi(base = ''): Api {
     createTask: (body) => sendJson('/tasks', 'POST', body),
     updateTask: (id, body) => sendJson(`/tasks/${id}`, 'PATCH', body),
     annotate: (id, body) => sendJson(`/tasks/${id}/annotations`, 'POST', { body }),
+    createProject: (body) => sendJson('/projects', 'POST', body),
   };
 }
 

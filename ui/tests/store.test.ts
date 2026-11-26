@@ -50,6 +50,10 @@ function countingApi(inner: Api): Api & { count: () => number } {
       reads += 1;
       return inner.annotate(id, body);
     },
+    async createProject(body) {
+      reads += 1;
+      return inner.createProject(body);
+    },
   };
   return { ...wrapped, count: () => reads };
 }
@@ -147,6 +151,7 @@ test('a dead transport lands in state.error instead of throwing out of the loop'
     createTask: (body: Record<string, unknown>) => fetch('http://127.0.0.1:9/tasks', { method: 'POST', body: JSON.stringify(body) }).then((r) => r.json()),
     updateTask: (id: number, body: Record<string, unknown>) => fetch(`http://127.0.0.1:9/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(body) }).then((r) => r.json()),
     annotate: (id: number, body: string) => fetch(`http://127.0.0.1:9/tasks/${id}/annotations`, { method: 'POST', body: JSON.stringify({ body }) }).then((r) => r.json()),
+    createProject: (body: Record<string, unknown>) => fetch('http://127.0.0.1:9/projects', { method: 'POST', body: JSON.stringify(body) }).then((r) => r.json()),
   };
   const store = createStore({ api: dead, storage: mapStorage() });
   await store.refresh();

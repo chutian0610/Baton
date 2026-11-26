@@ -180,11 +180,14 @@ test('the deep link opens the right task with every stored field', async () => {
   expect(wrapper.find('h1').text()).toBe('the audited one');
   expect(wrapper.text()).toContain('done'); // status badge
   expect(wrapper.text()).toContain('blocked'); // derived from the pending blocker
-  expect(wrapper.text()).toContain('detail-p'); // project name
-  expect(wrapper.find('dl').text()).toContain('H'); // priority
-  expect(wrapper.find('dl').text()).toContain('2h'); // effort
-  expect(wrapper.find('dl').text()).toContain('audit'); // tag badge
-  expect(wrapper.find('dl').text()).toContain(`#${parentId}`); // parent, deep-linkable
+  expect(wrapper.text()).toContain('detail-p'); // project name (project select)
+  const fieldsSection = wrapper.find('section.fields');
+  expect(fieldsSection.text()).toContain('H'); // priority
+  expect(fieldsSection.text()).toContain('2h'); // effort
+  expect(fieldsSection.text()).toContain('audit'); // tag chip
+  expect(fieldsSection.text()).toContain(`#${parentId}`); // parent, deep-linkable
+  // per-field editing: exactly one saveProject select (the project binding)
+  expect(fieldsSection.findAll('select[aria-label="Project"]').length).toBe(1);
   await wrapper.unmount();
 });
 
