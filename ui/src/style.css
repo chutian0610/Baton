@@ -165,46 +165,99 @@ body {
   margin-bottom: 0.6rem;
 }
 
-.filter-chip {
+.filter-dropdown {
+  position: relative;
+}
+
+.filter-button {
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
-  border: 1px solid var(--border);
+  gap: 0.4rem;
+  font-size: 13px;
+  padding: 0.3rem 0.8rem;
   border-radius: 999px;
+}
+
+.filter-button[aria-expanded='true'] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.filter-badge {
+  background: var(--accent);
+  color: #fff;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 0 0.4rem;
+  line-height: 1.5;
+}
+
+.filter-caret {
+  color: var(--faint);
+  font-size: 10px;
+}
+
+.filter-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  min-width: 190px;
   background: var(--panel);
-  color: var(--muted);
-  font-size: 12px;
-  padding: 0.14rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 10%);
+  padding: 0.5rem;
+}
+
+.filter-panel-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--faint);
+  padding: 0.1rem 0.5rem 0.35rem;
+}
+
+.filter-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+  font-size: 13px;
   cursor: pointer;
   user-select: none;
 }
 
-.filter-chip input {
-  position: absolute;
-  opacity: 0;
-  pointer-events: none;
+.filter-option:hover {
+  background: var(--bg);
 }
 
-.filter-chip:hover {
-  border-color: var(--faint);
+.filter-option input {
+  accent-color: var(--accent);
 }
 
-.filter-chip.active {
-  background: var(--text);
-  border-color: var(--text);
-  color: #fff;
-  font-weight: 600;
+.filter-option.disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.filter-option.disabled:hover {
+  background: none;
+}
+
+.filter-option .chip-count {
+  margin-left: auto;
 }
 
 .chip-count {
-  background: rgb(0 0 0 / 7%);
+  background: #e8e9ec;
   border-radius: 999px;
   font-size: 10px;
   padding: 0 0.4rem;
-}
-
-.filter-chip.active .chip-count {
-  background: rgb(255 255 255 / 22%);
+  color: var(--muted);
 }
 
 .search-box {
