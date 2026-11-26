@@ -160,30 +160,66 @@ body {
 .list-toolbar {
   display: flex;
   align-items: center;
-  min-height: 1.6rem;
-  margin-bottom: 0.5rem;
+  gap: 0.6rem;
+  min-height: 1.8rem;
+  margin-bottom: 0.6rem;
 }
 
-.visibility-toggle {
+.filter-chip {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  margin-right: 1.1rem;
-  color: var(--muted);
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.visibility-toggle input {
-  accent-color: var(--accent);
-}
-
-.count {
-  background: #e8e9ec;
+  gap: 0.3rem;
+  border: 1px solid var(--border);
   border-radius: 999px;
-  font-size: 11px;
-  padding: 0 0.45rem;
+  background: var(--panel);
   color: var(--muted);
+  font-size: 12px;
+  padding: 0.14rem 0.6rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.filter-chip input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.filter-chip:hover {
+  border-color: var(--faint);
+}
+
+.filter-chip.active {
+  background: var(--text);
+  border-color: var(--text);
+  color: #fff;
+  font-weight: 600;
+}
+
+.chip-count {
+  background: rgb(0 0 0 / 7%);
+  border-radius: 999px;
+  font-size: 10px;
+  padding: 0 0.4rem;
+}
+
+.filter-chip.active .chip-count {
+  background: rgb(255 255 255 / 22%);
+}
+
+.search-box {
+  margin-left: auto;
+  width: 13rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  padding: 0.28rem 0.8rem;
+  font-size: 13px;
+}
+
+.search-box:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 
 .error {
@@ -541,9 +577,52 @@ article h1 {
   margin: 0.6rem 0 1rem;
 }
 
-.transitions button {
+.transition-pill {
   font-size: 12px;
-  padding: 0.28rem 0.7rem;
+  font-weight: 600;
+  padding: 0.28rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.pill-active {
+  background: var(--accent-soft);
+  border-color: #f0cdb2;
+  color: var(--accent);
+}
+
+.pill-waiting {
+  background: #fff4d6;
+  border-color: #ecd9a0;
+  color: #8a6d00;
+}
+
+.pill-done {
+  background: #e7f4ec;
+  border-color: #bfe3cd;
+  color: var(--ok);
+}
+
+.pill-dropped {
+  background: #fdeaea;
+  border-color: #f2c4c4;
+  color: var(--danger);
+}
+
+.pill-pending {
+  background: var(--bg);
+}
+
+.transition-pill:hover:not(:disabled) {
+  filter: brightness(0.96);
+  border-color: currentcolor;
+}
+
+.edit-toggle {
+  font-size: 12px;
+  padding: 0.28rem 0.75rem;
+  border-radius: 999px;
 }
 
 section {
@@ -629,4 +708,131 @@ blockquote {
 .changes button {
   font-size: 12px;
   padding: 0.3rem 0.7rem;
+}
+
+/* -------------------------------------------------- history timeline */
+
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.change-row {
+  display: flex;
+  gap: 0.6rem;
+  padding: 0.45rem 0;
+}
+
+.timeline-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  margin-top: 0.35rem;
+  background: var(--faint);
+}
+
+.timeline-dot.actor-web {
+  background: var(--accent);
+}
+
+.timeline-dot.actor-mcp {
+  background: #3d8fd4;
+}
+
+.change-body {
+  min-width: 0;
+  flex: 1;
+}
+
+.change-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.2rem;
+}
+
+.actor-chip {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 999px;
+  padding: 0 0.5rem;
+  line-height: 1.6;
+  background: var(--bg);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+
+.actor-chip.actor-web {
+  background: var(--accent-soft);
+  border-color: #f0cdb2;
+  color: var(--accent);
+}
+
+.actor-chip.actor-mcp {
+  background: #e8f1fb;
+  border-color: #c4dcef;
+  color: #2a6db5;
+}
+
+.change-time {
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.change-created {
+  margin: 0 0 0.15rem;
+  font-weight: 600;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  align-items: center;
+}
+
+.created-chip {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 400;
+  padding: 0 0.5rem;
+  color: var(--muted);
+}
+
+.diff-entry {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  font-size: 13px;
+  padding: 0.06rem 0;
+}
+
+.diff-field {
+  color: var(--muted);
+  min-width: 5.2rem;
+}
+
+.diff-before {
+  color: var(--faint);
+  text-decoration: line-through;
+}
+
+.diff-before::after {
+  content: none;
+}
+
+.diff-arrow {
+  color: var(--faint);
+}
+
+.diff-after {
+  font-weight: 600;
+}
+
+.load-more {
+  margin-top: 0.5rem;
 }

@@ -75,6 +75,8 @@ export interface Store {
     visibility: Visibility;
     /** Ids of tree nodes currently expanded (session-scoped, not persisted). */
     expanded: Set<number>;
+    /** Search query: substring over title/tags, narrowing the current view. */
+    query: string;
   };
   /** The derived tree for the current view/scope/visibility/expanded set. */
   tree: Ref<TaskNode[]>;
@@ -88,6 +90,7 @@ export interface Store {
   setView(view: ViewName): void;
   setScope(scope: Scope): void;
   setVisibility(visibility: Visibility): void;
+  setQuery(query: string): void;
   toggleExpanded(id: number): void;
 }
 
@@ -115,6 +118,7 @@ export function createStore(options: StoreOptions = {}): Store {
     scope: 'all' as Scope,
     visibility: { showHidden: false, showDone: false, showDropped: false },
     expanded: new Set<number>(),
+    query: '',
   });
 
   const restored = parseScope(storage?.getItem(SCOPE_KEY) ?? null);
@@ -129,6 +133,7 @@ export function createStore(options: StoreOptions = {}): Store {
       visibility: state.visibility,
       now: now(),
       expanded: state.expanded,
+      query: state.query,
     }),
   );
 
@@ -182,6 +187,9 @@ export function createStore(options: StoreOptions = {}): Store {
     },
     setVisibility(visibility: Visibility) {
       state.visibility = visibility;
+    },
+    setQuery(query: string) {
+      state.query = query;
     },
     toggleExpanded(id: number) {
       if (state.expanded.has(id)) {

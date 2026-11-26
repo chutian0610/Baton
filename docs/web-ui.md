@@ -22,9 +22,9 @@ Three panes (Todoist-style, light):
 
 A browser has no working directory, so **Current Project resolution does not apply** to the Web UI: scoping is the sidebar's explicit selection, remembered across reloads.
 
-### Visibility toggles
+### Filter chips and search
 
-The default views hide `done`, `dropped`, and tasks whose `hidden_until` is still in the future — rules built for an agent's attention, not a supervisor's. The toggles re-add each set on top of any view, with live counts and distinguishing badges, so agent decisions never erase information from the observer: **show done**, **show dropped**, **show hidden**.
+The default views hide `done`, `dropped`, and tasks whose `hidden_until` is still in the future — rules built for an agent's attention, not a supervisor's. The toolbar's **filter chips** re-add each set on top of any view, with live counts and distinguishing badges, so agent decisions never erase information from the observer: **done**, **dropped**, **hidden**. The **search box** beside them narrows the current view by title or tag substring (case-insensitive) — combined with the chips, not instead of them.
 
 ## The task tree (nested tasks)
 
@@ -48,7 +48,7 @@ The audit window, next to the list:
 - **dependencies read-only** with their status and blocked state
 - the **annotation timeline**, newest first, attributed to its Actor, with an append-only input
 - **intervals** — every recorded span of the task being active, plus total active time
-- the **change log** — what changed, when, and which surface did it: `web` (this UI), `http` (curl/scripts), or `mcp (<client name>)` (an agent session). The first 100 rows load with the panel; older history loads on demand.
+- the **history timeline** — what changed, when, and which surface did it: a colored dot and chip per surface (`web` / `http` / `mcp (<client name>)`), relative stamps, and per-field diff rows (`before → after`, unchanged fields cut; create rows summarize their meaningful fields instead of dumping every column). The first 100 rows load with the panel; older history loads on demand.
 - **status transitions** — only the machine-legal targets are offered (`ui/src/transitions.ts` mirrors the matrix; the daemon validates), plus field editing for title/tags/priority/effort/due/hidden-until.
 
 The panel re-polls on its own (paused while hidden), so an agent mutating the task mid-audit is visible without re-navigation.

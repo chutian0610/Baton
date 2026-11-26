@@ -126,6 +126,17 @@ export interface TreeOptions {
   visibility: Visibility;
   now: number;
   expanded: ReadonlySet<number>;
+  /** Case-insensitive substring over title and tags; '' disables it. */
+  query: string;
+}
+
+/** The search predicate: substring over the title or any tag. */
+export function queryMatches(task: Task, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  if (needle === '') {
+    return true;
+  }
+  return task.title.toLowerCase().includes(needle) || task.tags.some((tag) => tag.includes(needle));
 }
 
 const MAX_DEPTH = 50;
@@ -155,7 +166,9 @@ export function buildTree(tasks: Task[], options: TreeOptions): TaskNode[] {
     list.sort(byDefaultOrder);
   }
 
-  const inView = (task: Task) => matchesView(task, options.view, options.now) || toggledIn(task, options.visibility, options.now);
+  const inView = (task: Task) =>
+    queryMatches(task, options.query) &&
+    (matchesView(task, options.view, options.now) || toggledIn(task, options.visibility, options.now));
 
   // Memoized appearance: a task appears when it matches the view, or when its
   // parent appears, is expanded, and the task belongs to the included set.

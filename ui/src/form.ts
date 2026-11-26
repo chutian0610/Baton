@@ -29,3 +29,24 @@ export function isoToLocal(iso: string | null): string {
 export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
+
+/** Compact relative time for audit stamps; the absolute time stays in the title tooltip. */
+export function timeAgo(iso: string, now = Date.now()): string {
+  const seconds = Math.round((now - Date.parse(iso)) / 1000);
+  if (seconds < 45) {
+    return 'just now';
+  }
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) {
+    return `${minutes}m ago`;
+  }
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) {
+    return `${hours}h ago`;
+  }
+  const days = Math.round(hours / 24);
+  if (days < 7) {
+    return `${days}d ago`;
+  }
+  return new Date(iso).toLocaleDateString();
+}

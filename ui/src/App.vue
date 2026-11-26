@@ -58,6 +58,14 @@ const detailId = computed(() => (route.value.name === 'task' ? route.value.id : 
           :now="store.state.lastSync ?? 0"
           @change="store.setVisibility"
         />
+        <input
+          class="search-box"
+          type="search"
+          placeholder="Search tasks…"
+          aria-label="Search tasks"
+          :value="store.state.query"
+          @input="store.setQuery(($event.target as HTMLInputElement).value)"
+        />
       </div>
 
       <NewTaskForm :scope="store.state.scope" @created="store.refresh()" />

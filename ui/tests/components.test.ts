@@ -233,7 +233,7 @@ test('the completion circle closes a task, and reopens it via the showDone toggl
   expect(all.find((task) => task.title === 'unbound stray')!.status).toBe('done');
 
   // showDone surfaces it again — with the filled circle
-  const doneToggle = wrapper.findAll('.visibility-toggle').find((node) => node.text().startsWith('done'))!;
+  const doneToggle = wrapper.findAll('.filter-chip').find((node) => node.text().startsWith('done'))!;
   await doneToggle.find('input').setValue(true);
   await wrapper.vm.$nextTick();
   const doneRow = () => wrapper.findAll('.task-row').find((node) => node.find('.title').text() === 'unbound stray')!;
