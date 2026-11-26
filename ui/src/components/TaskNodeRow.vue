@@ -115,7 +115,7 @@ function dueLabel(iso: string): string {
 
 <template>
   <div class="task-branch" :class="{ 'has-children': node.childCount > 0 }">
-    <div class="task-row" :class="[`status-${task.status}`]" :style="{ paddingLeft: `${props.node.depth * 1.4 + 0.6}rem` }">
+    <div class="task-row" :class="[`depth-${props.node.depth}`, `status-${task.status}`]">
       <button
         type="button"
         class="chevron"
