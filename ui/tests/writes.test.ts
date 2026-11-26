@@ -66,6 +66,7 @@ function nodeWriteApi(base: string): Api {
     createTask: (body) => send('POST', '/tasks', body),
     updateTask: (id, body) => send('PATCH', `/tasks/${id}`, body),
     annotate: (id, body) => send('POST', `/tasks/${id}/annotations`, { body }),
+    createProject: (body) => send('POST', '/projects', body),
   };
 }
 
@@ -153,7 +154,7 @@ test('create: Unbound by default, the picker project when scoped', async () => {
   await wrapper.unmount();
 });
 
-test('edit fields: title and priority update, the change log records the web actor', async () => {
+test('edit fields: each field edits and saves on its own, under the web actor', async () => {
   const seeded = (
     (
       await (
@@ -170,25 +171,30 @@ test('edit fields: title and priority update, the change log records the web act
   await wrapper.findAll('.task-row .title').find((node) => node.text() === 'to be edited')!.trigger('click');
   await waitFor(() => wrapper.find('h1').exists() && wrapper.find('h1').text() === 'to be edited', 'detail open');
 
-  const editButton = wrapper.findAll('button').find((node) => node.text().includes('Edit'))!;
-  await editButton.trigger('click');
-  await wrapper.vm.$nextTick();
-
-  await wrapper.find('input[aria-label="Title"]').setValue('edited from the dashboard');
-  await wrapper.find('select[aria-label="Priority"]').setValue('H');
-  await wrapper.findAll('button').find((node) => node.text() === 'Save')!.trigger('submit');
+  // title: click to edit, Enter to save — one PATCH, one field
+  await wrapper.find('h1.editable').trigger('click');
+  await wrapper.find('input[aria-label="Edit title"]').setValue('edited from the dashboard');
+  await wrapper.find('input[aria-label="Edit title"]').trigger('keydown.enter');
   await waitFor(
-    () => wrapper.find('h1').text() === 'edited from the dashboard',
+    () => wrapper.find('h1').exists() && wrapper.find('h1').text() === 'edited from the dashboard',
     'title updated',
     () => wrapper.text(),
   );
 
+  // priority: the inline select saves on change
+  await wrapper.find('select[aria-label="Priority"]').setValue('H');
+  await waitFor(
+    () => (wrapper.find('select[aria-label="Priority"]').element as HTMLSelectElement).value === 'H',
+    'priority set',
+  );
+
   const changes = await (await fetch(`${daemon.baseUrl}/tasks/${seeded}/changes`)).json();
-  // one PATCH row carries the whole field diff, under the web actor
-  expect(changes.changes[0].diff.title).toEqual({ before: 'to be edited', after: 'edited from the dashboard' });
+  // two single-field PATCH rows, both under the web actor
+  expect(changes.changes[1].diff.title).toEqual({ before: 'to be edited', after: 'edited from the dashboard' });
+  expect(changes.changes[1].actor).toEqual({ kind: 'web' });
   expect(changes.changes[0].diff.priority).toEqual({ before: null, after: 'H' });
   expect(changes.changes[0].actor).toEqual({ kind: 'web' });
-  expect(changes.total).toBe(2); // the create row + this PATCH
+  expect(changes.total).toBe(3); // create + title patch + priority patch
 
   await wrapper.unmount();
 });
@@ -260,34 +266,38 @@ test('annotate: the note lands newest-first under the web actor', async () => {
   await wrapper.unmount();
 });
 
-test('structural editing is absent: no parent, dependency, or project-rebind controls', async () => {
+test('structural editing boundaries: parent/dependency editing absent, project binding present', async () => {
   const seeded = (
     (
       await (
         await fetch(`${daemon.baseUrl}/tasks`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ title: 'structurally untouched' }),
+          body: JSON.stringify({ title: 'structurally checked' }),
         })
       ).json()
     ).task as { id: number }
   ).id;
 
   const wrapper = await mountApp();
-  await wrapper.findAll('.task-row .title').find((node) => node.text() === 'structurally untouched')!.trigger('click');
+  await wrapper.findAll('.task-row .title').find((node) => node.text() === 'structurally checked')!.trigger('click');
   await waitFor(() => wrapper.find('h1').exists(), 'detail open');
 
-  await wrapper.findAll('button').find((node) => node.text().includes('Edit'))!.trigger('click');
-  await wrapper.vm.$nextTick();
+  // no reparent or dependency editing anywhere in the panel
+  expect(wrapper.find('input[aria-label="Edit parent"], select[aria-label="Parent"]').exists()).toBe(false);
+  expect(wrapper.find('input[aria-label="Edit deps"], select[aria-label="Dependencies"]').exists()).toBe(false);
+  const panelText = wrapper.find('.detail-panel').text();
+  expect(panelText).not.toContain('Edit parent');
 
-  const text = wrapper.find('form.edit-form').text();
-  expect(text).not.toContain('Parent');
-  expect(text).not.toContain('Dependencies');
-  expect(text).not.toContain('Project');
-  expect(wrapper.find('form.edit-form input[aria-label="Parent"]').exists()).toBe(false);
-  expect(wrapper.find('form.edit-form select[aria-label="Project"]').exists()).toBe(false);
+  // project binding IS the allowed structural op (ADR-0006 second amendment):
+  // a select listing Unbound plus the projects
+  const projectSelect = wrapper.find('select[aria-label="Project"]');
+  expect(projectSelect.exists()).toBe(true);
+  const options = projectSelect.findAll('option').map((node) => node.text());
+  expect(options).toContain('Unbound');
+  expect(options).toContain('writes');
 
-  // the create form likewise has no parent input
+  // the create form likewise has no parent input (subtasks are added inline in the tree)
   await wrapper.find('.panel-close').trigger('click');
   await flushPromises();
   await wrapper.vm.$nextTick();

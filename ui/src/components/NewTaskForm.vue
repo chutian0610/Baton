@@ -81,16 +81,31 @@ async function submit(): Promise<void> {
     </button>
 
     <div v-if="detailsOpen" class="quick-add-fields">
-      <input v-model="tags" type="text" placeholder="tags, comma-separated" aria-label="Tags" />
-      <select v-model="priority" aria-label="Priority">
-        <option value="">priority</option>
-        <option value="H">H</option>
-        <option value="M">M</option>
-        <option value="L">L</option>
-      </select>
-      <input v-model="effort" type="text" placeholder="effort" aria-label="Effort" />
-      <input v-model="due" type="datetime-local" aria-label="Due" />
-      <input v-model="hiddenUntil" type="datetime-local" aria-label="Hidden until" />
+      <label class="qa-field">
+        <span>Tags</span>
+        <input v-model="tags" type="text" placeholder="comma, separated" aria-label="Tags" />
+      </label>
+      <label class="qa-field">
+        <span>Priority</span>
+        <select v-model="priority" aria-label="Priority">
+          <option value="">—</option>
+          <option value="H">H</option>
+          <option value="M">M</option>
+          <option value="L">L</option>
+        </select>
+      </label>
+      <label class="qa-field">
+        <span>Effort</span>
+        <input v-model="effort" type="text" placeholder="e.g. 2h" aria-label="Effort" />
+      </label>
+      <label class="qa-field">
+        <span>Due</span>
+        <input v-model="due" type="datetime-local" aria-label="Due" />
+      </label>
+      <label class="qa-field">
+        <span>Hidden until</span>
+        <input v-model="hiddenUntil" type="datetime-local" aria-label="Hidden until" />
+      </label>
     </div>
 
     <span v-if="error" class="error">{{ error }}</span>

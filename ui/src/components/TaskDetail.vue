@@ -4,18 +4,16 @@ import { injectApi } from '../api';
 import { errorMessage, isoToLocal, localToIso, parseTags, timeAgo } from '../form';
 import { navigate } from '../router';
 import { legalTargets } from '../transitions';
-import type { Actor, Change, TaskDetailPayload, TaskStatus } from '../types';
+import type { Actor, Change, Project, TaskDetailPayload, TaskStatus } from '../types';
 
 /**
- * The task detail panel (v0.3 T5 audit window + T6 writes, redesigned in the
- * v0.3 review pass): non-empty properties only, tinted machine-legal
- * transition pills, the annotation timeline, intervals, read-only
- * dependencies, and the FULL change log as a structured timeline — Actor
- * chips, relative stamps, per-field diff rows with no-op entries cut, and
- * create rows summarized instead of dumping every field. The panel re-polls
- * on an interval (paused while hidden) so an agent mutating the task cannot
- * leave the audit stale; structural editing (reparent, dependencies, project
- * re-binding) is deliberately absent — agent work over MCP (ADR-0006).
+ * The task detail panel: the audit window (annotations, intervals, deps,
+ * paged history) plus per-field editing — every property row edits and saves
+ * on its own (click the value, Enter saves, Esc cancels); tags render as an
+ * array of chips with add/remove; Project binds via a select (PATCH
+ * {project}, whole-subtree cascade, ADR-0006 second amendment). Structural
+ * editing that stays agent-side: reparenting and dependency changes. The
+ * panel re-polls so agent mutations surface live.
  */
 
 const props = withDefaults(defineProps<{ id: number; pollMs?: number }>(), { pollMs: 5000 });
@@ -27,6 +25,7 @@ const api = injectApi();
 const detail = ref<TaskDetailPayload | null>(null);
 const error = ref<string | null>(null);
 const actionError = ref<string | null>(null);
+const projects = ref<Project[]>([]);
 
 // ------------------------------------------------------------ change log (paged)
 
@@ -50,6 +49,7 @@ async function load(id: number, keepVisible = false): Promise<void> {
     detail.value = null;
     changes.value = [];
     changesTotal.value = 0;
+    editingField.value = null;
   }
   error.value = null;
   try {
@@ -62,8 +62,8 @@ async function load(id: number, keepVisible = false): Promise<void> {
   }
 }
 
-// Polling: the audit window follows the store (agents mutate while the
-// human watches); quiet reloads keep the current view until fresh data lands.
+// Polling: the audit window follows the store; quiet reloads keep the view
+// until fresh data lands. Polls pause while the tab is hidden.
 const pollTimer = ref<ReturnType<typeof setInterval> | undefined>();
 
 function startPolling(): void {
@@ -82,7 +82,6 @@ function stopPolling(): void {
   }
 }
 
-/** Runs one write, reloads the detail, and tells the parent to refresh its list. */
 async function act(write: () => Promise<unknown>): Promise<void> {
   actionError.value = null;
   try {
@@ -92,65 +91,6 @@ async function act(write: () => Promise<unknown>): Promise<void> {
   } catch (err) {
     actionError.value = errorMessage(err);
   }
-}
-
-// ------------------------------------------------------------ transitions
-
-const targets = computed<TaskStatus[]>(() => (detail.value ? legalTargets(detail.value.task.status) : []));
-
-function transitionTo(target: TaskStatus): void {
-  void act(() => api.updateTask(props.id, { status: target }));
-}
-
-// ------------------------------------------------------------ field editing
-
-const editing = ref(false);
-const editTitle = ref('');
-const editTags = ref('');
-const editPriority = ref('');
-const editEffort = ref('');
-const editDue = ref('');
-const editHiddenUntil = ref('');
-
-function startEditing(): void {
-  const task = detail.value!.task;
-  editTitle.value = task.title;
-  editTags.value = task.tags.join(', ');
-  editPriority.value = task.priority ?? '';
-  editEffort.value = task.effort ?? '';
-  editDue.value = isoToLocal(task.due);
-  editHiddenUntil.value = isoToLocal(task.hiddenUntil);
-  editing.value = true;
-}
-
-function saveEdits(): void {
-  const body: Record<string, unknown> = {
-    title: editTitle.value.trim(),
-    tags: parseTags(editTags.value),
-    priority: editPriority.value === '' ? null : editPriority.value,
-    effort: editEffort.value === '' ? null : editEffort.value,
-  };
-  body.due = localToIso(editDue.value);
-  body.hiddenUntil = localToIso(editHiddenUntil.value);
-  void act(async () => {
-    await api.updateTask(props.id, body);
-    editing.value = false;
-  });
-}
-
-// ------------------------------------------------------------ annotate
-
-const annotationDraft = ref('');
-
-function submitAnnotation(): void {
-  const body = annotationDraft.value.trim();
-  if (body === '') {
-    return;
-  }
-  void act(async () => {
-    await api.annotate(props.id, body);
-    annotationDraft.value = '';
-  });
 }
 
 // ------------------------------------------------------------ change log rendering
@@ -184,7 +124,6 @@ function formatValue(value: unknown): string {
   return JSON.stringify(value);
 }
 
-/** The meaningful diff rows: no-op entries (unchanged fields) are cut. */
 function diffEntries(change: Change): DiffEntry[] {
   return Object.entries(change.diff)
     .filter(([field, delta]) => field === 'title' || JSON.stringify(delta.before) !== JSON.stringify(delta.after))
@@ -195,7 +134,6 @@ function diffEntries(change: Change): DiffEntry[] {
     }));
 }
 
-/** A create row: every field moved from nothing — summarize instead of dumping. */
 function createSummary(change: Change): { field: string; value: string }[] {
   return Object.entries(change.diff)
     .filter(([field, delta]) => field !== 'title' && delta.before === null && delta.after !== null)
@@ -227,12 +165,122 @@ function formatTotal(ms: number): string {
   return `${Math.round(seconds / 60)}m`;
 }
 
+// ------------------------------------------------------------ per-field editing
+
+type EditableField = 'title' | 'priority' | 'effort' | 'due' | 'hiddenUntil';
+
+const editingField = ref<EditableField | null>(null);
+const draft = ref('');
+
+function startEdit(field: EditableField): void {
+  const task = detail.value!.task;
+  draft.value =
+    field === 'title'
+      ? task.title
+      : field === 'priority'
+        ? (task.priority ?? '')
+        : field === 'effort'
+          ? (task.effort ?? '')
+          : isoToLocal(field === 'due' ? task.due : task.hiddenUntil);
+  editingField.value = field;
+}
+
+function cancelEdit(): void {
+  editingField.value = null;
+}
+
+function saveEdit(field: EditableField): void {
+  if (field === 'title' || field === 'effort') {
+    const value = draft.value.trim();
+    if (value === '') {
+      return; // titles cannot be empty; effort clears via ✕ instead
+    }
+    void act(async () => {
+      await api.updateTask(props.id, { [field]: value });
+      editingField.value = null;
+    });
+    return;
+  }
+  if (field === 'priority') {
+    void act(async () => {
+      await api.updateTask(props.id, { priority: draft.value === '' ? null : draft.value });
+      editingField.value = null;
+    });
+    return;
+  }
+  void act(async () => {
+    await api.updateTask(props.id, { [field]: localToIso(draft.value) });
+    editingField.value = null;
+  });
+}
+
+// ------------------------------------------------------------ project binding
+
+function saveProject(event: Event): void {
+  const value = (event.target as HTMLSelectElement).value;
+  const project = value === 'unbound' ? null : Number(value);
+  void act(() => api.updateTask(props.id, { project }));
+}
+
+// ------------------------------------------------------------ tags (array chips)
+
+const tagAdding = ref(false);
+const newTag = ref('');
+
+function removeTag(tag: string): void {
+  const next = detail.value!.task.tags.filter((entry) => entry !== tag);
+  void act(() => api.updateTask(props.id, { tags: next }));
+}
+
+function addTag(): void {
+  const tag = newTag.value.trim().toLowerCase();
+  if (tag === '' || detail.value!.task.tags.includes(tag)) {
+    newTag.value = '';
+    return;
+  }
+  void act(async () => {
+    await api.updateTask(props.id, { tags: [...detail.value!.task.tags, tag] });
+    newTag.value = '';
+    tagAdding.value = false;
+  });
+}
+
+// ------------------------------------------------------------ annotate
+
+const annotationDraft = ref('');
+
+function submitAnnotation(): void {
+  const body = annotationDraft.value.trim();
+  if (body === '') {
+    return;
+  }
+  void act(async () => {
+    await api.annotate(props.id, body);
+    annotationDraft.value = '';
+  });
+}
+
+// ------------------------------------------------------------ transitions
+
+const targets = computed<TaskStatus[]>(() => (detail.value ? legalTargets(detail.value.task.status) : []));
+
+function transitionTo(target: TaskStatus): void {
+  void act(() => api.updateTask(props.id, { status: target }));
+}
+
+function savePriority(event: Event): void {
+  draft.value = (event.target as HTMLSelectElement).value;
+  saveEdit('priority');
+}
+
+// ------------------------------------------------------------ deps
+
 async function loadDep(id: number): Promise<{ id: number; title: string; status: string; blocked: boolean } | null> {
   try {
     const payload = await api.getTask(id);
     return payload.task;
   } catch {
-    return null; // a deleted world has no deleted tasks — deps always resolve, but stay safe
+    return null;
   }
 }
 
@@ -252,6 +300,9 @@ watch(
   () => props.id,
   (id) => {
     void load(id);
+    void api.listProjects().then((payload) => {
+      projects.value = payload.projects;
+    });
     startPolling();
   },
   { immediate: true },
@@ -262,7 +313,20 @@ onUnmounted(stopPolling);
 
 <template>
   <article v-if="detail">
-    <h1>{{ detail.task.title }}</h1>
+    <template v-if="editingField === 'title'">
+      <input
+        v-model="draft"
+        class="field-editor title-editor"
+        type="text"
+        aria-label="Edit title"
+        @keydown.enter.prevent="saveEdit('title')"
+        @keydown.esc.prevent="cancelEdit"
+      />
+    </template>
+    <template v-else>
+      <h1 class="editable" title="Click to edit the title" @click="startEdit('title')">{{ detail.task.title }}</h1>
+    </template>
+
     <p class="detail-status">
       <span class="badge" :class="`badge-${detail.task.status}`">{{ detail.task.status }}</span>
       <span v-if="detail.task.blocked" class="badge badge-blocked">blocked</span>
@@ -282,60 +346,139 @@ onUnmounted(stopPolling);
       >
         → {{ target }}
       </button>
-      <button v-if="!editing" type="button" class="edit-toggle" @click="startEditing">✎ Edit</button>
     </section>
 
-    <form v-if="editing" class="edit-form" @submit.prevent="saveEdits">
-      <input v-model="editTitle" type="text" aria-label="Title" />
-      <input v-model="editTags" type="text" placeholder="tags, comma-separated" aria-label="Tags" />
-      <select v-model="editPriority" aria-label="Priority">
-        <option value="">no priority</option>
-        <option value="H">H</option>
-        <option value="M">M</option>
-        <option value="L">L</option>
-      </select>
-      <input v-model="editEffort" type="text" placeholder="effort" aria-label="Effort" />
-      <input v-model="editDue" type="datetime-local" aria-label="Due" />
-      <input v-model="editHiddenUntil" type="datetime-local" aria-label="Hidden until" />
-      <button type="submit">Save</button>
-      <button type="button" @click="editing = false">Cancel</button>
-    </form>
-
     <section class="fields">
-      <dl>
-        <dt>Project</dt>
-        <dd>{{ detail.task.projectName ?? 'Unbound' }}</dd>
-        <template v-if="detail.task.priority !== null">
-          <dt>Priority</dt>
-          <dd>{{ detail.task.priority }}</dd>
+      <div class="prop-row">
+        <span class="prop-label">Project</span>
+        <select
+          class="prop-select"
+          aria-label="Project"
+          :value="detail.task.projectId ?? 'unbound'"
+          @change="saveProject"
+        >
+          <option value="unbound">Unbound</option>
+          <option v-for="project in projects" :key="project.id" :value="String(project.id)">
+            {{ project.name }}
+          </option>
+        </select>
+        <span class="prop-hint">binding cascades to the whole subtree</span>
+      </div>
+
+      <div class="prop-row">
+        <span class="prop-label">Priority</span>
+        <select class="prop-select slim" aria-label="Priority" :value="detail.task.priority ?? ''" @change="savePriority">
+          <option value="">—</option>
+          <option value="H">H</option>
+          <option value="M">M</option>
+          <option value="L">L</option>
+        </select>
+      </div>
+
+      <div class="prop-row">
+        <span class="prop-label">Effort</span>
+        <template v-if="editingField === 'effort'">
+          <input
+            v-model="draft"
+            class="field-editor"
+            type="text"
+            aria-label="Edit effort"
+            @keydown.enter.prevent="saveEdit('effort')"
+            @keydown.esc.prevent="cancelEdit"
+          />
+          <button type="button" class="mini-btn" @click="saveEdit('effort')">✓</button>
+          <button type="button" class="mini-btn" @click="cancelEdit">✕</button>
         </template>
-        <template v-if="detail.task.effort !== null">
-          <dt>Effort</dt>
-          <dd>{{ detail.task.effort }}</dd>
+        <template v-else>
+          <button type="button" class="prop-value" :class="{ empty: detail.task.effort === null }" @click="startEdit('effort')">
+            {{ detail.task.effort ?? '—' }}
+          </button>
         </template>
-        <template v-if="detail.task.due !== null">
-          <dt>Due</dt>
-          <dd>{{ formatWhen(detail.task.due) }}</dd>
+      </div>
+
+      <div class="prop-row">
+        <span class="prop-label">Due</span>
+        <template v-if="editingField === 'due'">
+          <input
+            v-model="draft"
+            class="field-editor"
+            type="datetime-local"
+            aria-label="Edit due"
+            @keydown.enter.prevent="saveEdit('due')"
+            @keydown.esc.prevent="cancelEdit"
+          />
+          <button type="button" class="mini-btn" @click="saveEdit('due')">✓</button>
+          <button type="button" class="mini-btn" @click="cancelEdit">✕</button>
         </template>
-        <template v-if="detail.task.hiddenUntil !== null">
-          <dt>Hidden until</dt>
-          <dd>{{ formatWhen(detail.task.hiddenUntil) }}</dd>
+        <template v-else>
+          <button
+            type="button"
+            class="prop-value"
+            :class="{ empty: detail.task.due === null }"
+            @click="startEdit('due')"
+          >
+            {{ detail.task.due === null ? '—' : formatWhen(detail.task.due) }}
+          </button>
         </template>
-        <template v-if="detail.task.parentId !== null">
-          <dt>Parent</dt>
-          <dd>
-            <button type="button" class="link" @click="navigate(`/ui/tasks/${detail.task.parentId}`)">
-              #{{ detail.task.parentId }}
-            </button>
-          </dd>
+      </div>
+
+      <div class="prop-row">
+        <span class="prop-label">Hidden until</span>
+        <template v-if="editingField === 'hiddenUntil'">
+          <input
+            v-model="draft"
+            class="field-editor"
+            type="datetime-local"
+            aria-label="Edit hidden until"
+            @keydown.enter.prevent="saveEdit('hiddenUntil')"
+            @keydown.esc.prevent="cancelEdit"
+          />
+          <button type="button" class="mini-btn" @click="saveEdit('hiddenUntil')">✓</button>
+          <button type="button" class="mini-btn" @click="cancelEdit">✕</button>
         </template>
-        <template v-if="detail.task.tags.length > 0">
-          <dt>Tags</dt>
-          <dd>
-            <span v-for="tag in detail.task.tags" :key="tag" class="tag-chip">{{ tag }}</span>
-          </dd>
+        <template v-else>
+          <button
+            type="button"
+            class="prop-value"
+            :class="{ empty: detail.task.hiddenUntil === null }"
+            @click="startEdit('hiddenUntil')"
+          >
+            {{ detail.task.hiddenUntil === null ? '—' : formatWhen(detail.task.hiddenUntil) }}
+          </button>
         </template>
-      </dl>
+      </div>
+
+      <div v-if="detail.task.parentId !== null" class="prop-row">
+        <span class="prop-label">Parent</span>
+        <button type="button" class="link" @click="navigate(`/ui/tasks/${detail.task.parentId}`)">
+          #{{ detail.task.parentId }}
+        </button>
+      </div>
+
+      <div class="prop-row">
+        <span class="prop-label">Tags</span>
+        <span class="tag-list">
+          <span v-for="tag in detail.task.tags" :key="tag" class="tag-chip">
+            {{ tag }}
+            <button type="button" class="tag-remove" :aria-label="`Remove tag ${tag}`" @click="removeTag(tag)">×</button>
+          </span>
+          <span v-if="detail.task.tags.length === 0 && !tagAdding" class="prop-empty">none</span>
+          <template v-if="tagAdding">
+            <input
+              v-model="newTag"
+              class="field-editor tag-editor"
+              type="text"
+              placeholder="tag name"
+              aria-label="New tag"
+              @keydown.enter.prevent="addTag"
+              @keydown.esc.prevent="tagAdding = false"
+            />
+            <button type="button" class="mini-btn" :disabled="newTag.trim() === ''" @click="addTag">✓</button>
+            <button type="button" class="mini-btn" @click="tagAdding = false">✕</button>
+          </template>
+          <button v-else type="button" class="tag-add" aria-label="Add tag" @click="tagAdding = true">＋ tag</button>
+        </span>
+      </div>
     </section>
 
     <section v-if="detail.children.length > 0" class="children">
@@ -361,13 +504,12 @@ onUnmounted(stopPolling);
 
     <section v-if="detail.intervals.length > 0 || detail.totalActiveMs > 0" class="intervals">
       <h2>Intervals</h2>
-      <p v-if="detail.intervals.length === 0">Never active yet.</p>
       <ul>
         <li v-for="interval in detail.intervals" :key="interval.id">
           {{ formatInterval(interval.startedAt, interval.endedAt) }}
         </li>
       </ul>
-      <p v-if="detail.totalActiveMs > 0" class="meta">total active: {{ formatTotal(detail.totalActiveMs) }}</p>
+      <p class="meta">total active: {{ formatTotal(detail.totalActiveMs) }}</p>
     </section>
 
     <section class="annotations">
