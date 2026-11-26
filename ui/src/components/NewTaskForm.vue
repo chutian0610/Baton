@@ -80,6 +80,7 @@ async function submit(): Promise<void> {
     <button type="button" class="quick-add-details" :aria-expanded="detailsOpen" aria-label="Optional fields" @click="detailsOpen = !detailsOpen">
       ▾
     </button>
+    <button type="submit" aria-label="Create task" :disabled="title.trim() === '' || submitting">Create</button>
 
     <OptionalTaskFields v-if="detailsOpen" v-model:tags="tags" v-model:priority="priority" v-model:effort="effort" v-model:due="due" v-model:hidden-until="hiddenUntil" />
 

@@ -97,7 +97,7 @@ function colorFor(id: number): string {
 
 <template>
   <aside class="sidebar">
-    <div class="brand"><span class="brand-dot" /> Baton</div>
+    <div class="brand"><span class="brand-dot" /> baton<span class="brand-cursor" /></div>
 
     <nav class="nav-section">
       <div class="nav-title">Views</div>
