@@ -48,6 +48,7 @@ const detailId = computed(() => (route.value.name === 'task' ? route.value.id : 
       :projects="store.state.projects"
       @set-view="store.setView"
       @set-scope="store.setScope"
+      @created="store.refresh()"
     />
 
     <main class="main">

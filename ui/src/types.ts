@@ -34,8 +34,10 @@ export interface Task {
 export interface Project {
   id: number;
   name: string;
+  /** Optional free-text description (null when unset). */
+  description: string | null;
   createdAt: string;
-  /** Bound paths in canonical form. */
+  /** Bound paths in canonical form; empty when created without paths. */
   paths: string[];
   openTaskCount: number;
 }

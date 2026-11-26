@@ -131,6 +131,41 @@ test('missing cwd answers 400 with a clear message', async () => {
   expect(body.error).toContain('cwd');
 });
 
+test('a project can be created without paths and with a description', async () => {
+  const created = (
+    await (
+      await postProject({ name: 'pathless', description: 'the human\u2019s reading board' })
+    ).json()
+  ).project;
+  expect(created.paths).toEqual([]); // legal since the Web UI (ADR-0006 amendment)
+  expect(created.description).toBe('the human\u2019s reading board');
+
+  const list = (await (await fetch(`${daemon.baseUrl}/projects`)).json()).projects as Array<{
+    name: string;
+    paths: string[];
+    description: string | null;
+    openTaskCount: number;
+  }>;
+  const pathless = list.find((project) => project.name === 'pathless')!;
+  expect(pathless.paths).toEqual([]);
+  expect(pathless.description).toBe('the human\u2019s reading board');
+  expect(pathless.openTaskCount).toBe(0);
+
+  // a pathless project never resolves as the Current Project
+  const miss = await resolveCwd('/workspace/pathless');
+  expect(miss.status).toBe(404);
+});
+
+test('description is optional and stores null when absent or empty', async () => {
+  const withEmpty = (
+    await (await postProject({ name: 'no-desc', description: '   ' })).json()
+  ).project;
+  expect(withEmpty.description).toBeNull();
+
+  const absent = (await (await postProject({ name: 'no-desc-absent' })).json()).project;
+  expect(absent.description).toBeNull();
+});
+
 test('duplicate project name answers 409 with a clear message', async () => {
   await postProject({ name: 'dupe', paths: ['/workspace/dupe'] });
 

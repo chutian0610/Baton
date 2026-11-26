@@ -55,7 +55,7 @@ The panel re-polls on its own (paused while hidden), so an agent mutating the ta
 
 ## Projects
 
-Projects are born in the sidebar: the **＋** affordance in the Projects section opens a small form — a name plus at least one absolute bound path (the daemon requires paths; they are what Current Project resolution matches against for agent callers). Binding a task happens in the detail panel's Project select: one action, whole-subtree cascade, change-logged per affected task.
+Projects are born in the sidebar: the **＋** affordance opens a **modal dialog** — name required, description and bound paths optional (comma-separated absolute paths; a pathless project never resolves as the Current Project for agent callers, and projects carry an optional description shown under their sidebar name). Binding a task happens in the detail panel's Project select: one action, whole-subtree cascade, change-logged per affected task.
 
 ## Writes and the web Actor
 

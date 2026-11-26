@@ -5,7 +5,7 @@ The same core the MCP tools wrap, curl-friendly. Base: `http://127.0.0.1:7600`.
 | Method & path | Purpose |
 | --- | --- |
 | `GET /healthz` | liveness probe |
-| `POST /projects` | create a Project (name + bound paths) |
+| `POST /projects` | create a Project (name required; description and bound paths optional — a pathless Project never resolves as the Current Project) |
 | `GET /projects` | list Projects with paths and open-task counts |
 | `GET /projects/current?cwd=…` | resolve a working directory to the Current Project |
 | `POST /tasks` | create a Task (capture-first: no project needed; `project` optional, absent/null = Unbound) |
@@ -43,12 +43,12 @@ Default views (no explicit `status`) exclude `done`, `dropped`, and tasks whose 
 
 ## Walkthrough
 
-Create a Project bound to a local path:
+Create a Project — name required; description and bound paths optional (a pathless Project never resolves as the Current Project):
 
 ```sh
 curl -s -X POST http://127.0.0.1:7600/projects \
   -H 'content-type: application/json' \
-  -d '{"name":"my-app","paths":["/path/to/my-app"]}'
+  -d '{"name":"my-app","description":"the board for my-app","paths":["/path/to/my-app"]}'
 ```
 
 Capture a task from anywhere — no Project needed (every task starts Unbound, and `cwd` is never consulted at create):

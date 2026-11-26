@@ -64,13 +64,14 @@ test('project_create and project_list mirror the HTTP API', async () => {
   try {
     const created = await client.callTool({
       name: 'project_create',
-      arguments: { name: 'gamma', paths: ['/workspace/gamma/main/', '/workspace/gamma/checkout'] },
+      arguments: { name: 'gamma', description: 'the gamma board', paths: ['/workspace/gamma/main/', '/workspace/gamma/checkout'] },
     });
     expect(created.isError).toBeFalsy();
     expect(jsonOf(created)).toMatchObject({
       project: {
         name: 'gamma',
         paths: ['/workspace/gamma/checkout', '/workspace/gamma/main'], // canonical, sorted
+        description: 'the gamma board',
         openTaskCount: 0,
       },
     });
