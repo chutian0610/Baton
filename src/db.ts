@@ -214,6 +214,17 @@ export const MIGRATIONS: readonly Migration[] = [
     },
     rebuildsReferencedTable: true,
   },
+  {
+    version: 8,
+    name: 'project-description',
+    up: (db) => {
+      // Web UI project creation (ADR-0006 second amendment): projects carry an
+      // optional free-text description, and creating one without bound paths
+      // becomes legal — a pathless project simply never matches a cwd in
+      // Current Project resolution. ADD COLUMN keeps every row as stored.
+      db.exec('ALTER TABLE projects ADD COLUMN description TEXT;');
+    },
+  },
 ];
 
 /** Opens (creating if needed) `<dataDir>/data.db` and brings its schema to the latest version. */

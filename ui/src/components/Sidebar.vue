@@ -31,23 +31,49 @@ const api = injectApi();
 
 const creating = ref(false);
 const newName = ref('');
-const newPath = ref('');
+const newDescription = ref('');
+const newPaths = ref('');
 const submitting = ref(false);
 const error = ref<string | null>(null);
 
+function closeCreate(): void {
+  creating.value = false;
+  newName.value = '';
+  newDescription.value = '';
+  newPaths.value = '';
+  error.value = null;
+}
+
+function onModalKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') {
+    closeCreate();
+  }
+}
+
 async function submitProject(): Promise<void> {
   const name = newName.value.trim();
-  const path = newPath.value.trim();
-  if (name === '' || path === '' || submitting.value) {
+  if (name === '' || submitting.value) {
     return;
   }
   submitting.value = true;
   error.value = null;
   try {
-    await api.createProject({ name, paths: [path] });
-    newName.value = '';
-    newPath.value = '';
-    creating.value = false;
+    const body: Record<string, unknown> = { name };
+    const description = newDescription.value.trim();
+    if (description !== '') {
+      body.description = description;
+    }
+    // optional, comma-separated bound paths; a project without paths never
+    // resolves as the Current Project (ADR-0006 second amendment)
+    const paths = newPaths.value
+      .split(',')
+      .map((path) => path.trim())
+      .filter((path) => path !== '');
+    if (paths.length > 0) {
+      body.paths = paths;
+    }
+    await api.createProject(body);
+    closeCreate();
     emit('created');
   } catch (err) {
     error.value = errorMessage(err);
@@ -93,15 +119,7 @@ function colorFor(id: number): string {
         Projects
         <button type="button" class="nav-add" aria-label="New project" @click="creating = !creating">＋</button>
       </div>
-      <form v-if="creating" class="new-project" @submit.prevent="submitProject">
-        <input v-model="newName" type="text" placeholder="Project name" aria-label="Project name" />
-        <input v-model="newPath" type="text" placeholder="/absolute/bound/path" aria-label="Project path" />
-        <div class="new-project-actions">
-          <button type="submit" :disabled="newName.trim() === '' || newPath.trim() === '' || submitting">Create</button>
-          <button type="button" @click="creating = false">Cancel</button>
-        </div>
-        <p v-if="error" class="error">{{ error }}</p>
-      </form>
+
       <button type="button" class="nav-item" :class="{ active: scope === 'all' }" @click="emit('set-scope', 'all')">
         <span class="project-dot all" />
         <span class="nav-label">All projects</span>
@@ -117,12 +135,55 @@ function colorFor(id: number): string {
         type="button"
         class="nav-item"
         :class="{ active: scope === project.id }"
+        :title="project.description ?? undefined"
         @click="emit('set-scope', project.id)"
       >
         <span class="project-dot" :style="{ background: colorFor(project.id) }" />
-        <span class="nav-label">{{ project.name }}</span>
+        <span class="nav-body">
+          <span class="nav-label">{{ project.name }}</span>
+          <span v-if="project.description" class="nav-sub">{{ project.description }}</span>
+        </span>
         <span class="nav-count">{{ project.openTaskCount }}</span>
       </button>
     </nav>
   </aside>
+
+    <div v-if="creating" class="modal-backdrop" @click.self="closeCreate">
+      <div
+        class="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="New project"
+        @keydown.esc.prevent="closeCreate"
+      >
+        <h2 class="modal-title">New project</h2>
+        <form @submit.prevent="submitProject">
+          <label class="modal-field">
+            <span>Name <em class="req">*</em></span>
+            <input ref="nameInput" v-model="newName" type="text" aria-label="Project name" autofocus />
+          </label>
+          <label class="modal-field">
+            <span>Description</span>
+            <input v-model="newDescription" type="text" placeholder="optional" aria-label="Project description" />
+          </label>
+          <label class="modal-field">
+            <span>Bound paths</span>
+            <input
+              v-model="newPaths"
+              type="text"
+              placeholder="optional — /absolute/path, /another/path"
+              aria-label="Project path"
+            />
+            <span class="modal-hint">comma-separated absolute paths; a project without paths never matches a working directory</span>
+          </label>
+          <p v-if="error" class="error">{{ error }}</p>
+          <div class="modal-actions">
+            <button type="button" @click="closeCreate">Cancel</button>
+            <button type="submit" class="primary" :disabled="newName.trim() === '' || submitting">
+              {{ submitting ? 'Creating…' : 'Create' }}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
 </template>

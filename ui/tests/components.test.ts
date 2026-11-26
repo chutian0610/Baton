@@ -142,6 +142,32 @@ test('project scoping lives in the sidebar; Unbound isolates', async () => {
   await wrapper.unmount();
 });
 
+test('the new-project modal creates a project with optional description and paths', async () => {
+  const wrapper = await mountApp();
+
+  await wrapper.find('.nav-add').trigger('click');
+  await wrapper.vm.$nextTick();
+  expect(wrapper.find('.modal').exists()).toBe(true);
+
+  // name required: the create button stays disabled without it
+  expect(wrapper.find('.modal-actions button.primary').attributes('disabled')).toBeDefined();
+  await wrapper.find('input[aria-label="Project name"]').setValue('modal-born');
+  await wrapper.find('input[aria-label="Project description"]').setValue('born from the dialog');
+  // paths left empty on purpose: a project without paths is legal now
+  await wrapper.find('.modal-actions button.primary').trigger('submit');
+  await waitFor(() => Boolean(sidebarItem(wrapper, 'modal-born')), 'project appears in the sidebar');
+
+  const item = sidebarItem(wrapper, 'modal-born');
+  expect(item.find('.nav-sub').text()).toBe('born from the dialog');
+
+  // selecting it scopes the list (empty — no tasks bound yet)
+  await item.trigger('click');
+  await wrapper.vm.$nextTick();
+  expect(rowTitles(wrapper)).toEqual([]);
+
+  await wrapper.unmount();
+});
+
 test('the tree expands and collapses; the count chip counts children either way', async () => {
   const wrapper = await mountApp();
 

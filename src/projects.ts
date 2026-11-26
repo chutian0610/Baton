@@ -30,8 +30,10 @@ export class ProjectError extends Error {
 export interface ProjectView {
   id: number;
   name: string;
+  /** Optional free-text description (null when unset). */
+  description: string | null;
   createdAt: string;
-  /** Bound paths in canonical form, sorted for stable output. */
+  /** Bound paths in canonical form, sorted for stable output; empty when the project was created without paths. */
   paths: string[];
   /** Open (not done/dropped) task count. */
   openTaskCount: number;
@@ -47,6 +49,7 @@ export interface CurrentProject {
 interface ProjectRow {
   id: number;
   name: string;
+  description: string | null;
   created_at: string;
 }
 
@@ -73,33 +76,42 @@ interface PathClashRow {
  * the caller's Actor, in the same transaction.
  */
 export function createProject(db: Db, input: unknown, actor: Actor): ProjectView {
-  const { name, paths } = (typeof input === 'object' && input !== null ? input : {}) as {
+  const { name, description, paths } = (typeof input === 'object' && input !== null ? input : {}) as {
     name?: unknown;
+    description?: unknown;
     paths?: unknown;
   };
   const parsedName = parseName(name);
-  const parsedPaths = parsePaths(paths);
+  // Optional free-text description (web UI): absent/empty stores null.
+  const parsedDescription =
+    typeof description === 'string' && description.trim() !== '' ? description.trim() : null;
+  // Optional since the Web UI (ADR-0006 second amendment): a project without
+  // bound paths is legal — it simply never resolves as the Current Project.
+  const parsedPaths = paths === undefined || paths === null ? [] : parsePaths(paths);
 
   const findProjectByName = db.prepare('SELECT id FROM projects WHERE name = ?');
-  const findPathClashes = db.prepare(
-    `SELECT pp.path AS path, p.name AS project_name
-       FROM project_paths pp
-       JOIN projects p ON p.id = pp.project_id
-      WHERE pp.path IN (${parsedPaths.map(() => '?').join(', ')})`,
-  );
-  const insertProject = db.prepare('INSERT INTO projects (name) VALUES (?)');
+  const findPathClashes =
+    parsedPaths.length > 0
+      ? db.prepare(
+          `SELECT pp.path AS path, p.name AS project_name
+             FROM project_paths pp
+             JOIN projects p ON p.id = pp.project_id
+            WHERE pp.path IN (${parsedPaths.map(() => '?').join(', ')})`,
+        )
+      : undefined;
+  const insertProject = db.prepare('INSERT INTO projects (name, description) VALUES (?, ?)');
   const insertPath = db.prepare('INSERT INTO project_paths (path, project_id) VALUES (?, ?)');
 
   const create = db.transaction((): ProjectView => {
     if (findProjectByName.get(parsedName) !== undefined) {
       throw new ProjectError('duplicate', `project name already exists: ${parsedName}`);
     }
-    const clashes = findPathClashes.all(...parsedPaths) as PathClashRow[];
+    const clashes = (findPathClashes?.all(...parsedPaths) ?? []) as PathClashRow[];
     if (clashes.length > 0) {
       const clash = clashes[0];
       throw new ProjectError('duplicate', `path already bound to project ${clash.project_name}: ${clash.path}`);
     }
-    const id = Number(insertProject.run(parsedName).lastInsertRowid);
+    const id = Number(insertProject.run(parsedName, parsedDescription).lastInsertRowid);
     for (const path of parsedPaths) {
       insertPath.run(path, id);
     }
@@ -111,7 +123,11 @@ export function createProject(db: Db, input: unknown, actor: Actor): ProjectView
       db,
       'project',
       id,
-      { name: { before: null, after: project.name }, paths: { before: null, after: project.paths } },
+      {
+        name: { before: null, after: project.name },
+        description: { before: null, after: project.description },
+        paths: { before: null, after: project.paths },
+      },
       actor,
     );
     return project;
@@ -124,7 +140,7 @@ export function createProject(db: Db, input: unknown, actor: Actor): ProjectView
 // --------------------------------------------------------------------------
 
 export function listProjects(db: Db): ProjectView[] {
-  const rows = db.prepare('SELECT id, name, created_at FROM projects ORDER BY id').all() as ProjectRow[];
+  const rows = db.prepare('SELECT id, name, description, created_at FROM projects ORDER BY id').all() as ProjectRow[];
   return rows.map((row) => assembleProject(db, row));
 }
 
@@ -179,7 +195,7 @@ export function resolveCurrentProject(db: Db, cwd: unknown): CurrentProject {
 // --------------------------------------------------------------------------
 
 function projectById(db: Db, id: number): ProjectView | undefined {
-  const row = db.prepare('SELECT id, name, created_at FROM projects WHERE id = ?').get(id) as
+  const row = db.prepare('SELECT id, name, description, created_at FROM projects WHERE id = ?').get(id) as
     | ProjectRow
     | undefined;
   return row === undefined ? undefined : assembleProject(db, row);
@@ -192,6 +208,7 @@ function assembleProject(db: Db, row: ProjectRow): ProjectView {
   return {
     id: row.id,
     name: row.name,
+    description: row.description ?? null,
     createdAt: row.created_at,
     paths: pathRows.map((pathRow) => pathRow.path),
     openTaskCount: countOpenTasks(db, row.id),

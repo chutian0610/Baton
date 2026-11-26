@@ -52,16 +52,18 @@ export function buildMcpServer(db: Db): McpServer {
     {
       title: 'Create project',
       description:
-        'Create a Project with a unique name and one or more bound absolute local paths. ' +
+        'Create a Project with a unique name, an optional free-text description, and optional bound ' +
+        'absolute local paths (a project without paths never resolves as the Current Project). ' +
         'Paths are stored canonically (no trailing slash) and each path binds to at most one project; ' +
         'duplicate names and already-bound paths are rejected.',
       inputSchema: {
         name: z.string().min(1),
-        paths: z.array(z.string().min(1)).min(1),
+        description: z.string().optional(),
+        paths: z.array(z.string().min(1)).optional(),
       },
     },
-    async ({ name, paths }, extra) =>
-      runTool(() => ({ project: createProject(db, { name, paths }, mcpActor(extra.sessionId)) })),
+    async ({ name, description, paths }, extra) =>
+      runTool(() => ({ project: createProject(db, { name, description, paths }, mcpActor(extra.sessionId)) })),
   );
 
   mcp.registerTool(
