@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
-import { extname, join, resolve, sep } from 'node:path';
+import { basename, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -296,9 +296,15 @@ async function handleUiRoute(req: IncomingMessage, res: ServerResponse, path: st
   }
   try {
     const content = await readFile(target);
+    // Cache contract: index.html (the shell and every SPA fallback) must
+    // always be revalidated — it is what points at the content-hashed asset
+    // bundles. Hashed assets never change content, so they cache forever.
+    const isShell = basename(target) === 'index.html';
+    const cacheControl = isShell ? 'no-cache' : 'public, max-age=31536000, immutable';
     res.writeHead(200, {
       'content-type': UI_CONTENT_TYPES[extname(target)] ?? 'application/octet-stream',
       'content-length': content.length,
+      'cache-control': cacheControl,
     });
     res.end(req.method === 'HEAD' ? undefined : content);
   } catch {
