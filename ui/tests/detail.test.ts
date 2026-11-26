@@ -231,6 +231,11 @@ test('intervals render with their span and the total active time', async () => {
 test('the history timeline is newest-first with structured diffs and actor attribution', async () => {
   const wrapper = await mountDetail(targetId);
   await waitForSection(wrapper, 'History');
+  // the section renders before its paged rows land — wait for the data, not the shell
+  await waitFor(
+    () => section(wrapper, 'History')!.findAll('.change-row').length >= 3,
+    'history rows rendered',
+  );
 
   const history = section(wrapper, 'History');
   const rows = history.findAll('.change-row');
