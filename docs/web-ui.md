@@ -16,15 +16,13 @@ Three panes (Todoist-style, light):
 
 ## Views and scoping
 
-- **Open** — every open task across the scope (Unbound ones included; capture-first)
-- **Today** — open tasks due today or overdue
-- **Blocked** — open tasks whose derived `blocked` flag is true
+The list header carries **status tabs** (GitHub issues style): **Open** (aggregating `pending` + `active` + `waiting` — the glossary's open set), **Done**, and **Dropped**, each with a live count. The **Status ▾** dropdown beside them multi-selects the Open tab's individual statuses (with colored dots and counts) and carries the **Show hidden** switch. The sidebar keeps the special views — **Today** (open tasks due today or overdue) and **Blocked** (open tasks whose derived `blocked` flag is true) — which are fixed composites that ignore the tabs.
 
 A browser has no working directory, so **Current Project resolution does not apply** to the Web UI: scoping is the sidebar's explicit selection, remembered across reloads.
 
-### Filter chips and search
+### Hidden gating and search
 
-The default views hide `done`, `dropped`, and tasks whose `hidden_until` is still in the future — rules built for an agent's attention, not a supervisor's. The toolbar's **filter chips** re-add each set on top of any view, with live counts and distinguishing badges, so agent decisions never erase information from the observer: **done**, **dropped**, **hidden**. The **search box** beside them narrows the current view by title or tag substring (case-insensitive) — combined with the chips, not instead of them.
+Tasks whose `hidden_until` is still in the future are gated out of the Open tab (and Today/Blocked) unless **Show hidden** is switched on — rules built for an agent's attention, not a supervisor's; the gate lifts automatically once the timestamp passes. The **search box** in the toolbar narrows the current view by title or tag substring (case-insensitive) — combined with the tabs and filters, not instead of them.
 
 ## The task tree (nested tasks)
 

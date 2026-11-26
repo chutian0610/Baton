@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, inject, onMounted, onUnmounted, provide, ref } from 'vue';
 import NewTaskForm from './components/NewTaskForm.vue';
-import FilterDropdown from './components/FilterDropdown.vue';
 import Sidebar from './components/Sidebar.vue';
+import StatusDropdown from './components/StatusDropdown.vue';
+import StatusTabs from './components/StatusTabs.vue';
 import TaskDetail from './components/TaskDetail.vue';
 import TaskTree from './components/TaskTree.vue';
 import { createHttpApi } from './api';
@@ -51,12 +52,21 @@ const detailId = computed(() => (route.value.name === 'task' ? route.value.id : 
 
     <main class="main">
       <div class="list-toolbar">
-        <FilterDropdown
-          :visibility="store.state.visibility"
+        <StatusTabs
+          :tab="store.state.status.tab"
+          :view="store.state.view"
           :tasks="store.state.tasks"
           :scope="store.state.scope"
           :now="store.state.lastSync ?? 0"
-          @change="store.setVisibility"
+          @change="store.setStatusTab"
+        />
+        <StatusDropdown
+          :status="store.state.status"
+          :tasks="store.state.tasks"
+          :scope="store.state.scope"
+          :now="store.state.lastSync ?? 0"
+          @toggle-status="store.toggleStatusInFilter"
+          @set-show-hidden="store.setShowHidden"
         />
         <input
           class="search-box"

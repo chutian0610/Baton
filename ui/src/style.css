@@ -169,6 +169,81 @@ body {
   position: relative;
 }
 
+/* --------------------------------------------------------- status tabs */
+
+.status-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.status-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  padding: 0.28rem 0.7rem;
+  font: inherit;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.status-tab:hover {
+  color: var(--text);
+  background: #eceeef;
+}
+
+.status-tab.active {
+  background: var(--panel);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 6%);
+  border: 1px solid var(--border);
+  padding: 0.2rem 0.65rem;
+}
+
+.status-tab-count {
+  background: #e8e9ec;
+  border-radius: 999px;
+  font-size: 11px;
+  padding: 0 0.45rem;
+  color: var(--muted);
+}
+
+.status-tab.active .status-tab-count {
+  background: var(--bg);
+}
+
+.status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.status-dot-pending {
+  background: var(--border);
+}
+
+.status-dot-active {
+  background: var(--accent);
+}
+
+.status-dot-waiting {
+  background: #e3b93d;
+}
+
+.status-dot-done {
+  background: var(--ok);
+}
+
+.status-dot-dropped {
+  background: var(--danger);
+}
+
 .filter-button {
   display: inline-flex;
   align-items: center;
@@ -196,6 +271,26 @@ body {
 .filter-caret {
   color: var(--faint);
   font-size: 10px;
+}
+
+.filter-option-label {
+  font-weight: 600;
+}
+
+.filter-option-body {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.3;
+}
+
+.filter-option-sub {
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.filter-divider {
+  border-top: 1px solid var(--border);
+  margin: 0.4rem 0.2rem;
 }
 
 .filter-panel {
