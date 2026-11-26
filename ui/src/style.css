@@ -830,6 +830,33 @@ body {
   background: var(--panel);
 }
 
+.add-subtask {
+  flex-wrap: wrap;
+}
+
+.add-subtask input {
+  flex: 1;
+}
+
+.add-subtask-details {
+  background: none;
+  border: none;
+  color: var(--faint);
+  font-size: 10px;
+  padding: 0.3rem 0.4rem;
+}
+
+.add-subtask-details:hover {
+  color: var(--accent);
+}
+
+.add-subtask .quick-add-fields {
+  width: 100%;
+  border-top: 1px dashed var(--border);
+  padding-top: 0.5rem;
+  margin-top: 0.2rem;
+}
+
 .add-subtask button {
   font-size: 12px;
   padding: 0.25rem 0.6rem;

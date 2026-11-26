@@ -200,17 +200,25 @@ test('inline add-subtask creates a child under the parent, inheriting its projec
 
   const addForm = wrapper.find('form.add-subtask');
   await addForm.find('input').setValue('added inline from the tree');
-  await addForm.find('button').trigger('submit');
+  // optional fields unfold with the ▾ toggle — same language as the quick-add bar
+  await addForm.find('.add-subtask-details').trigger('click');
+  await wrapper.vm.$nextTick();
+  await flushPromises();
+  const freshForm = wrapper.find('form.add-subtask');
+  await freshForm.find('select[aria-label="Priority"]').setValue('H');
+  await freshForm.find('button[type="submit"]').trigger('submit');
   await waitFor(() => rowTitles(wrapper).includes('added inline from the tree'), 'new subtask rendered');
 
   const all = (await (await fetch(`${daemon.baseUrl}/tasks?view=all`)).json()).tasks as {
     title: string;
     parentId: number | null;
     projectId: number | null;
+    priority: string | null;
   }[];
   const created = all.find((task) => task.title === 'added inline from the tree')!;
   expect(created.parentId).toBe(parentId);
   expect(created.projectId).toBe(projectId); // inherited from the parent at create
+  expect(created.priority).toBe('H'); // from the unfolded optional fields
 
   await wrapper.unmount();
 });
