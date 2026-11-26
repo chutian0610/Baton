@@ -77,8 +77,10 @@ async function submit(): Promise<void> {
       placeholder="Add a task, press Enter to capture…"
       aria-label="New task title"
     />
-    <button type="button" class="quick-add-details" :aria-expanded="detailsOpen" aria-label="Optional fields" @click="detailsOpen = !detailsOpen">
-      ▾
+    <button type="button" class="quick-add-details" :class="{ open: detailsOpen }" :aria-expanded="detailsOpen" aria-label="Optional fields" @click="detailsOpen = !detailsOpen">
+      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+        <path d="M3 5.5 L8 10.5 L13 5.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
     </button>
     <button type="submit" aria-label="Create task" :disabled="title.trim() === '' || submitting">Create</button>
 
