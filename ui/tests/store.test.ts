@@ -84,7 +84,7 @@ test('refresh populates tasks and projects; the derived list reflects the open v
   expect(store.state.projects).toEqual([]);
   expect(store.state.error).toBeNull();
   expect(store.state.lastSync).not.toBeNull();
-  expect(store.list.value.map((task) => task.title)).toContain('store seed'); // Unbound, in the global open view
+  expect(store.tree.value.map((node) => node.task.title)).toContain('store seed'); // Unbound, in the global open view
   store.stop();
 });
 
@@ -132,7 +132,7 @@ test('setView changes the derived list without refetching', async () => {
 
   store.setView('blocked');
   expect(store.state.view).toBe('blocked');
-  void store.list.value; // recompute is pure client-side
+  void store.tree.value; // recompute is pure client-side
   expect(counted.count()).toBe(readsAfterRefresh);
   store.stop();
 });

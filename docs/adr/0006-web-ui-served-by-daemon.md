@@ -6,9 +6,11 @@ Decision (2026-11): the same daemon serves the built SPA at `/ui` on the same po
 
 Considered and rejected: a read-only dashboard (the human's corrections would detour through conversation with an agent — lossy and indirect, when every write endpoint already exists server-side); a separate UI process or port (new lifecycle, no gain); token auth (nothing is protected on a localhost-bound single-user daemon that the Origin check does not already cover).
 
+Amendment (2026-11, first real use): the boundary moved from "no structural editing" to **capture-with-structure is UI work, re-organization stays agent work**. The UI may create a subtask under an existing parent and expand/collapse the tree — recording a plan's shape as it is captured. Still deliberately absent from the UI: reparenting existing tasks (including drag-and-drop), dependency editing, and project cascade re-binding — those are re-organization, and a browser DAG editor costs more than it buys.
+
 ## Consequences
 
 - Web writes carry a distinct Actor — they must not masquerade as the constant direct-HTTP-caller actor.
 - The Origin check only affects browser-originated requests; no existing client breaks.
-- Structural editing stays out of the UI: reparenting, dependency editing, and project cascade moves are agent work over MCP — a browser DAG editor costs more than it buys.
+- Subtask creation may name a parent at create time; re-parenting afterwards is not expressible in the UI.
 - A browser has no cwd, so Current Project resolution does not apply; the UI scopes by explicit selection instead.

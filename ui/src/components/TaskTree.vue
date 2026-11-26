@@ -1,71 +1,26 @@
 <script setup lang="ts">
-import { computed } from 'vue';
-import { navigate } from '../router';
-import { isHiddenNow } from '../views';
-import type { Task } from '../types';
+import { inject } from 'vue';
+import type { Store } from '../store';
+import type { TaskNode } from '../views';
+import TaskNodeRow from './TaskNodeRow.vue';
 
 /**
- * The task tree (v0.3 T4): the derived list rendered with single-parent
- * nesting — a task is indented one level per ancestor that is also visible.
- * Rows follow the derived order verbatim (due/priority/id), so a child may
- * appear before its parent when it sorts earlier; the indent carries the
- * structure. Every row links into the task detail route. The `hidden` badge
- * applies only while the hide is actually in force (isHiddenNow), matching
- * the derivation — not merely "has a hidden_until field".
+ * The task tree (v0.3 redesign): renders the store's derived tree —
+ * expanded parents reveal their children inline (TaskNodeRow recurses),
+ * collapse state lives in the store. The store is injected so a completion
+ * click or a created subtask can refresh the shared data without an emit
+ * chain through every level.
  */
 
-const props = defineProps<{ tasks: Task[]; now: number }>();
+defineProps<{ nodes: TaskNode[]; now: number }>();
 
-interface Row {
-  task: Task;
-  depth: number;
-}
-
-const rows = computed<Row[]>(() => {
-  const byId = new Map(props.tasks.map((task) => [task.id, task]));
-  return props.tasks.map((task) => {
-    let depth = 0;
-    let parentId = task.parentId;
-    while (parentId !== null && depth < 50) {
-      const parent = byId.get(parentId);
-      if (parent === undefined) {
-        break; // parent not in the visible list — this row sits at top level
-      }
-      depth += 1;
-      parentId = parent.parentId;
-    }
-    return { task, depth };
-  });
-});
-
-function dueLabel(task: Task): string {
-  if (task.due === null) {
-    return '';
-  }
-  return `due ${new Date(task.due).toLocaleString()}`;
-}
+const store = inject<Store>('store')!;
 </script>
 
 <template>
   <ul class="task-tree">
-    <li
-      v-for="row in rows"
-      :key="row.task.id"
-      class="task-row"
-      :class="[`depth-${row.depth}`, `status-${row.task.status}`]"
-      :style="{ marginLeft: `${row.depth * 1.5}rem` }"
-    >
-      <button type="button" class="task-link" @click="navigate(`/ui/tasks/${row.task.id}`)">
-        {{ row.task.title }}
-      </button>
-      <span class="badge" :class="`badge-${row.task.status}`">{{ row.task.status }}</span>
-      <span v-if="row.task.blocked" class="badge badge-blocked">blocked</span>
-      <span v-if="row.task.hiddenUntil !== null && isHiddenNow(row.task, now)" class="badge badge-soft">hidden</span>
-      <span v-if="row.task.progress !== null" class="progress">{{ Math.round(row.task.progress * 100) }}%</span>
-      <span v-if="row.task.priority" class="badge badge-soft">{{ row.task.priority }}</span>
-      <span v-if="row.task.due !== null" class="meta">{{ dueLabel(row.task) }}</span>
-      <span class="meta">{{ row.task.projectName ?? 'Unbound' }}</span>
-      <span v-for="tag in row.task.tags" :key="tag" class="badge badge-soft">{{ tag }}</span>
+    <li v-for="node in nodes" :key="node.task.id" class="top-level">
+      <TaskNodeRow :node="node" :now="now" @toggle="store.toggleExpanded" />
     </li>
   </ul>
 </template>

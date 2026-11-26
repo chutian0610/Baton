@@ -93,7 +93,7 @@ async function mountApp() {
 }
 
 function visibleTitles(wrapper: ReturnType<typeof mount>): string[] {
-  return wrapper.findAll('.task-link').map((node) => node.text());
+  return wrapper.findAll('.task-row .title').map((node) => node.text());
 }
 
 beforeAll(async () => {
@@ -128,7 +128,7 @@ test('create: Unbound by default, the picker project when scoped', async () => {
 
   // Unbound: picker untouched ('all')
   await wrapper.find('input[aria-label="New task title"]').setValue('captured from the dashboard');
-  await wrapper.find('form.new-task button[type="submit"]').trigger('submit');
+  await wrapper.find('form.quick-add').trigger('submit');
   await waitFor(() => visibleTitles(wrapper).includes('captured from the dashboard'), 'created task in tree');
   const created = (
     (await (await fetch(`${daemon.baseUrl}/tasks?view=all`)).json()) as {
@@ -138,10 +138,10 @@ test('create: Unbound by default, the picker project when scoped', async () => {
   expect(created.projectId).toBeNull(); // capture-first
 
   // picker scoped to the project: that project is the only assignment
-  await wrapper.find('.project-picker').setValue(String(projectId));
+  await wrapper.findAll('.nav-item').find((node) => node.text().startsWith('writes'))!.trigger('click');
   await wrapper.vm.$nextTick();
   await wrapper.find('input[aria-label="New task title"]').setValue('captured into writes');
-  await wrapper.find('form.new-task button[type="submit"]').trigger('submit');
+  await wrapper.find('form.quick-add').trigger('submit');
   await waitFor(() => visibleTitles(wrapper).includes('captured into writes'), 'scoped creation in tree');
   const scoped = (
     (await (await fetch(`${daemon.baseUrl}/tasks?view=all`)).json()) as {
@@ -167,7 +167,7 @@ test('edit fields: title and priority update, the change log records the web act
   ).id;
 
   const wrapper = await mountApp();
-  await wrapper.findAll('.task-link').find((node) => node.text() === 'to be edited')!.trigger('click');
+  await wrapper.findAll('.task-row .title').find((node) => node.text() === 'to be edited')!.trigger('click');
   await waitFor(() => wrapper.find('h1').exists() && wrapper.find('h1').text() === 'to be edited', 'detail open');
 
   const editButton = wrapper.findAll('button').find((node) => node.text() === 'Edit fields')!;
@@ -207,7 +207,7 @@ test('transitions: only machine-legal targets are offered; intervals open and cl
   ).id;
 
   const wrapper = await mountApp();
-  await wrapper.findAll('.task-link').find((node) => node.text() === 'transitioned by hand')!.trigger('click');
+  await wrapper.findAll('.task-row .title').find((node) => node.text() === 'transitioned by hand')!.trigger('click');
   await waitFor(() => wrapper.find('h1').exists(), 'detail open');
 
   // pending offers exactly active/waiting/done/dropped (mirrors LEGAL_TARGETS)
@@ -246,7 +246,7 @@ test('annotate: the note lands newest-first under the web actor', async () => {
   ).id;
 
   const wrapper = await mountApp();
-  await wrapper.findAll('.task-link').find((node) => node.text() === 'annotated by hand')!.trigger('click');
+  await wrapper.findAll('.task-row .title').find((node) => node.text() === 'annotated by hand')!.trigger('click');
   await waitFor(() => wrapper.find('h1').exists(), 'detail open');
 
   await wrapper.find('textarea[aria-label="New annotation"]').setValue('a note from the human');
@@ -274,7 +274,7 @@ test('structural editing is absent: no parent, dependency, or project-rebind con
   ).id;
 
   const wrapper = await mountApp();
-  await wrapper.findAll('.task-link').find((node) => node.text() === 'structurally untouched')!.trigger('click');
+  await wrapper.findAll('.task-row .title').find((node) => node.text() === 'structurally untouched')!.trigger('click');
   await waitFor(() => wrapper.find('h1').exists(), 'detail open');
 
   await wrapper.findAll('button').find((node) => node.text() === 'Edit fields')!.trigger('click');
@@ -288,10 +288,10 @@ test('structural editing is absent: no parent, dependency, or project-rebind con
   expect(wrapper.find('form.edit-form select[aria-label="Project"]').exists()).toBe(false);
 
   // the create form likewise has no parent input
-  await wrapper.find('main button.back').trigger('click');
+  await wrapper.find('.panel-close').trigger('click');
   await flushPromises();
   await wrapper.vm.$nextTick();
-  expect(wrapper.find('form.new-task input[aria-label="Parent"]').exists()).toBe(false);
+  expect(wrapper.find('form.quick-add input[aria-label="Parent"]').exists()).toBe(false);
 
   await wrapper.unmount();
 });
