@@ -116,6 +116,8 @@ export interface TaskNode {
   children: TaskNode[];
   /** Direct children in the store — for the count chip, expanded or not. */
   childCount: number;
+  /** Whether this node is expanded (a childless node can expand to add its first subtask). */
+  expanded: boolean;
 }
 
 export interface TreeOptions {
@@ -192,8 +194,9 @@ export function buildTree(tasks: Task[], options: TreeOptions): TaskNode[] {
   }
 
   function nodeFor(task: Task, depth: number): TaskNode {
-    const node: TaskNode = { task, depth, children: [], childCount: childrenOf.get(task.id)?.length ?? 0 };
-    if (!options.expanded.has(task.id)) {
+    const expanded = options.expanded.has(task.id);
+    const node: TaskNode = { task, depth, children: [], childCount: childrenOf.get(task.id)?.length ?? 0, expanded };
+    if (!expanded) {
       return node;
     }
     for (const child of childrenOf.get(task.id) ?? []) {

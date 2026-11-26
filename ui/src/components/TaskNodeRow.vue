@@ -29,7 +29,7 @@ const childError = ref<string | null>(null);
 const busy = ref(false);
 
 const task = computed(() => props.node.task);
-const expanded = computed(() => props.node.children.length > 0);
+const expanded = computed(() => props.node.expanded);
 
 async function toggleDone(): Promise<void> {
   const target = task.value.status === 'done' ? 'pending' : 'done';
@@ -78,16 +78,14 @@ function dueLabel(iso: string): string {
   <div class="task-branch" :class="{ 'has-children': node.childCount > 0 }">
     <div class="task-row" :class="[`status-${task.status}`]" :style="{ paddingLeft: `${props.node.depth * 1.4 + 0.6}rem` }">
       <button
-        v-if="node.childCount > 0"
         type="button"
         class="chevron"
-        :class="{ open: expanded }"
+        :class="{ open: expanded, empty: node.childCount === 0 }"
         :aria-label="expanded ? 'Collapse subtasks' : 'Expand subtasks'"
         @click="$emit('toggle', task.id)"
       >
         ▸
       </button>
-      <span v-else class="chevron-spacer" />
 
       <button
         type="button"

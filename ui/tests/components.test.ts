@@ -179,6 +179,35 @@ test('inline add-subtask creates a child under the parent, inheriting its projec
   await wrapper.unmount();
 });
 
+test('a childless task offers the subtask entry too: first subtask creation', async () => {
+  const wrapper = await mountApp();
+
+  // 'unbound stray' has no children — its chevron is the dim placeholder style,
+  // but expanding must still reveal the inline add-subtask input
+  const row = () => wrapper.findAll('.task-row').find((node) => node.find('.title').text() === 'unbound stray')!;
+  expect(row().find('.chevron').classes()).toContain('empty');
+
+  await row().find('.chevron').trigger('click');
+  await wrapper.vm.$nextTick();
+  const addForm = () => wrapper.findAll('form.add-subtask').find((node) => node.find('input').attributes('aria-label') === 'New subtask title under unbound stray');
+  expect(addForm()).toBeTruthy();
+
+  await addForm()!.find('input').setValue('the very first subtask');
+  await addForm()!.find('button').trigger('submit');
+  await waitFor(() => rowTitles(wrapper).includes('the very first subtask'), 'first subtask rendered under its parent');
+
+  const all = (await (await fetch(`${daemon.baseUrl}/tasks?view=all`)).json()).tasks as {
+    id: number;
+    title: string;
+    parentId: number | null;
+  }[];
+  expect(all.find((task) => task.title === 'the very first subtask')!.parentId).toBe(
+    all.find((task) => task.title === 'unbound stray')!.id,
+  );
+
+  await wrapper.unmount();
+});
+
 async function waitFor(condition: () => boolean, what: string): Promise<void> {
   for (let i = 0; i < 100; i++) {
     await flushPromises();
