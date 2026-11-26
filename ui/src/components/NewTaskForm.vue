@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { injectApi } from '../api';
+import OptionalTaskFields from './OptionalTaskFields.vue';
 import { errorMessage, localToIso, parseTags } from '../form';
 import type { Scope } from '../views';
 
@@ -80,33 +81,7 @@ async function submit(): Promise<void> {
       ▾
     </button>
 
-    <div v-if="detailsOpen" class="quick-add-fields">
-      <label class="qa-field">
-        <span>Tags</span>
-        <input v-model="tags" type="text" placeholder="comma, separated" aria-label="Tags" />
-      </label>
-      <label class="qa-field">
-        <span>Priority</span>
-        <select v-model="priority" aria-label="Priority">
-          <option value="">—</option>
-          <option value="H">H</option>
-          <option value="M">M</option>
-          <option value="L">L</option>
-        </select>
-      </label>
-      <label class="qa-field">
-        <span>Effort</span>
-        <input v-model="effort" type="text" placeholder="e.g. 2h" aria-label="Effort" />
-      </label>
-      <label class="qa-field">
-        <span>Due</span>
-        <input v-model="due" type="datetime-local" aria-label="Due" />
-      </label>
-      <label class="qa-field">
-        <span>Hidden until</span>
-        <input v-model="hiddenUntil" type="datetime-local" aria-label="Hidden until" />
-      </label>
-    </div>
+    <OptionalTaskFields v-if="detailsOpen" v-model:tags="tags" v-model:priority="priority" v-model:effort="effort" v-model:due="due" v-model:hidden-until="hiddenUntil" />
 
     <span v-if="error" class="error">{{ error }}</span>
   </form>

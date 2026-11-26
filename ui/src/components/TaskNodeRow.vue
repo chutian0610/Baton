@@ -2,6 +2,7 @@
 import { computed, inject, ref } from 'vue';
 import { injectApi } from '../api';
 import { errorMessage } from '../form';
+import OptionalTaskFields from './OptionalTaskFields.vue';
 import { navigate } from '../router';
 import type { Store } from '../store';
 import { isHiddenNow, type TaskNode } from '../views';
@@ -24,12 +25,49 @@ const api = injectApi();
 const store = inject<Store>('store')!;
 
 const addingChild = ref(false);
+const childFieldsOpen = ref(false);
 const childTitle = ref('');
+const childTags = ref('');
+const childPriority = ref('');
+const childEffort = ref('');
+const childDue = ref('');
+const childHiddenUntil = ref('');
 const childError = ref<string | null>(null);
 const busy = ref(false);
 
 const task = computed(() => props.node.task);
 const expanded = computed(() => props.node.expanded);
+
+function childBody(title: string): Record<string, unknown> {
+  const body: Record<string, unknown> = { title, parent: task.value.id };
+  if (task.value.projectId !== null) {
+    body.project = task.value.projectId; // inherit the parent's project at create (explicit)
+  }
+  if (childFieldsOpen.value) {
+    const tags = childTags.value
+      .split(',')
+      .map((tag) => tag.trim().toLowerCase())
+      .filter((tag) => tag !== '');
+    if (tags.length > 0) {
+      body.tags = tags;
+    }
+    if (childPriority.value !== '') {
+      body.priority = childPriority.value;
+    }
+    if (childEffort.value !== '') {
+      body.effort = childEffort.value;
+    }
+    const due = childDue.value === '' ? null : new Date(childDue.value).toISOString();
+    if (due !== null) {
+      body.due = due;
+    }
+    const hidden = childHiddenUntil.value === '' ? null : new Date(childHiddenUntil.value).toISOString();
+    if (hidden !== null) {
+      body.hiddenUntil = hidden;
+    }
+  }
+  return body;
+}
 
 async function toggleDone(): Promise<void> {
   const target = task.value.status === 'done' ? 'pending' : 'done';
@@ -53,12 +91,13 @@ async function submitChild(): Promise<void> {
   busy.value = true;
   childError.value = null;
   try {
-    const body: Record<string, unknown> = { title, parent: task.value.id };
-    if (task.value.projectId !== null) {
-      body.project = task.value.projectId; // inherit the parent's project at create (explicit)
-    }
-    await api.createTask(body);
+    await api.createTask(childBody(title));
     childTitle.value = '';
+    childTags.value = '';
+    childPriority.value = '';
+    childEffort.value = '';
+    childDue.value = '';
+    childHiddenUntil.value = '';
     // make sure the fresh child is visible under its parent
     store.state.expanded.add(task.value.id);
     await store.refresh();
@@ -126,7 +165,7 @@ function dueLabel(iso: string): string {
         :now="now"
         @toggle="$emit('toggle', $event)"
       />
-      <form class="add-subtask" :style="{ marginLeft: `${(props.node.depth + 1) * 1.4 + 0.6}rem` }" @submit.prevent="submitChild">
+      <form class="add-subtask" @submit.prevent="submitChild">
         <span class="add-glyph">＋</span>
         <input
           v-model="childTitle"
@@ -136,7 +175,24 @@ function dueLabel(iso: string): string {
           @focus="addingChild = true"
           @blur="addingChild = false"
         />
+        <button
+          type="button"
+          class="add-subtask-details"
+          :aria-expanded="childFieldsOpen"
+          aria-label="Optional subtask fields"
+          @click="childFieldsOpen = !childFieldsOpen"
+        >
+          ▾
+        </button>
         <button type="submit" :disabled="childTitle.trim() === '' || busy">Add</button>
+        <OptionalTaskFields
+          v-if="childFieldsOpen"
+          v-model:tags="childTags"
+          v-model:priority="childPriority"
+          v-model:effort="childEffort"
+          v-model:due="childDue"
+          v-model:hidden-until="childHiddenUntil"
+        />
       </form>
     </div>
   </div>
