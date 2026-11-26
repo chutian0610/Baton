@@ -32,11 +32,11 @@ Tasks nest as a single-parent tree, and the list shows it:
 - **An expanded parent brings all its open children regardless of the current view** — a parent surfaced by Today still shows its not-due children under it. Tasks whose parent chain is not visible surface at top level instead of disappearing.
 - **Add subtask**: every expanded parent has an inline input at the bottom of its children. The created child inherits the parent's project at create time (an Unbound parent yields an Unbound child). This is capture-with-structure per the ADR-0006 amendment.
 - **Completion circle**: one click closes a task (`done`), one click on a done task reopens it (`pending`) — the two machine-legal directions a single control can safely offer. Every other transition lives in the detail panel.
-- **Re-parenting existing tasks, drag-and-drop reordering, dependency editing, and project cascade re-binding are deliberately absent** — re-organization is agent work over MCP (ADR-0006 amendment).
+- **Re-parenting existing tasks, drag-and-drop reordering, and dependency editing are deliberately absent** — re-organization is agent work over MCP. Project binding, however, IS available: the detail panel's Project select (ADR-0006 amendments).
 
 ## Quick add
 
-The quick-add bar captures a top-level task with Enter — Unbound under All/Unbound, into the selected project when one is picked (the only assignment path). The `▾` toggle folds out optional fields: tags, priority, effort, due, hidden-until.
+The quick-add bar captures a top-level task with Enter — Unbound under All/Unbound, into the selected project when one is picked (the only assignment path). The `▾` toggle folds out a labeled field grid: tags, priority, effort, due, hidden-until. The tree's inline add-subtask input speaks the same language (＋ glyph, Enter to create).
 
 ## Task detail panel
 
@@ -47,9 +47,15 @@ The audit window, next to the list:
 - the **annotation timeline**, newest first, attributed to its Actor, with an append-only input
 - **intervals** — every recorded span of the task being active, plus total active time
 - the **history timeline** — what changed, when, and which surface did it: a colored dot and chip per surface (`web` / `http` / `mcp (<client name>)`), relative stamps, and per-field diff rows (`before → after`, unchanged fields cut; create rows summarize their meaningful fields instead of dumping every column). The first 100 rows load with the panel; older history loads on demand.
-- **status transitions** — only the machine-legal targets are offered (`ui/src/transitions.ts` mirrors the matrix; the daemon validates), plus field editing for title/tags/priority/effort/due/hidden-until.
+- **status transitions** — only the machine-legal targets are offered (`ui/src/transitions.ts` mirrors the matrix; the daemon validates)
+- **per-field editing** — every property edits on its own: the title in place (click, Enter saves, Esc cancels), Priority as an inline select, Effort/Due/Hidden-until each with their own save, **Tags as an array of chips** (remove with ×, add with ＋ tag) — each action a single-field PATCH under the `web` Actor
+- **project binding** — the Project row is a select (Unbound + every project); changing it moves the task and its whole subtree in one cascade (ADR-0006 second amendment)
 
 The panel re-polls on its own (paused while hidden), so an agent mutating the task mid-audit is visible without re-navigation.
+
+## Projects
+
+Projects are born in the sidebar: the **＋** affordance in the Projects section opens a small form — a name plus at least one absolute bound path (the daemon requires paths; they are what Current Project resolution matches against for agent callers). Binding a task happens in the detail panel's Project select: one action, whole-subtree cascade, change-logged per affected task.
 
 ## Writes and the web Actor
 
