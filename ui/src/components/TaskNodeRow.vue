@@ -123,7 +123,9 @@ function dueLabel(iso: string): string {
         :aria-label="expanded ? 'Collapse subtasks' : 'Expand subtasks'"
         @click="$emit('toggle', task.id)"
       >
-        ▸
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+          <path d="M5.5 3 L10.5 8 L5.5 13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
       </button>
 
       <button
@@ -178,11 +180,14 @@ function dueLabel(iso: string): string {
         <button
           type="button"
           class="add-subtask-details"
+          :class="{ open: childFieldsOpen }"
           :aria-expanded="childFieldsOpen"
           aria-label="Optional subtask fields"
           @click="childFieldsOpen = !childFieldsOpen"
         >
-          ▾
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+            <path d="M3 5.5 L8 10.5 L13 5.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
         </button>
         <button type="submit" :disabled="childTitle.trim() === '' || busy">Add</button>
         <OptionalTaskFields
