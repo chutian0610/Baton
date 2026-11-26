@@ -211,9 +211,10 @@ test('annotations render newest-first, attributed to web, http and mcp actors', 
     expect(at).toBeGreaterThan(last);
     last = at;
   }
+  // actor chips: web and http kinds by name, mcp by its client name
+  expect(text).toContain('detail-test-client');
   expect(text).toContain('web');
   expect(text).toContain('http');
-  expect(text).toContain('mcp (detail-test-client)');
   await wrapper.unmount();
 });
 
@@ -223,24 +224,49 @@ test('intervals render with their span and the total active time', async () => {
   const intervals = section(wrapper, 'Intervals');
   expect(intervals.text()).not.toContain('active now'); // the interval was closed by task_done
   expect(intervals.findAll('li').length).toBe(1);
-  expect(intervals.text()).toMatch(/total active: \d+s/);
+  expect(intervals.text()).toMatch(/total active: /); // humanized: '<1s' for sub-second spans
   await wrapper.unmount();
 });
 
-test('the change log is newest-first with actor attribution across surfaces', async () => {
+test('the history timeline is newest-first with structured diffs and actor attribution', async () => {
   const wrapper = await mountDetail(targetId);
-  await waitForSection(wrapper, 'Change log');
+  await waitForSection(wrapper, 'History');
 
-  const changes = section(wrapper, 'Change log');
-  const text = changes.text();
-  // newest first: done (mcp), then active (web), then the create row (web);
-  // the create row carries the full-field diff (no "(created)" marker)
-  const createdRow = 'title: null → "the audited one"';
-  expect(text.indexOf('mcp (detail-test-client)')).toBeLessThan(text.indexOf(createdRow));
-  expect(text).toContain(createdRow);
-  expect(text).toContain('status: "active" → "done"');
-  expect(text).toContain('status: "pending" → "active"');
-  expect(text).toContain('web'); // the start transition came from the dashboard
+  const history = section(wrapper, 'History');
+  const rows = history.findAll('.change-row');
+  expect(rows.length).toBeGreaterThanOrEqual(3);
+
+  // newest first: done (mcp), then active (web), …, then the create row (web)
+  expect(rows[0]!.find('.actor-chip').text()).toBe('detail-test-client');
+  const doneEntry = rows[0]!.findAll('.diff-entry').find((entry) => entry.find('.diff-field').text() === 'status')!;
+  expect(doneEntry.find('.diff-before').text()).toBe('active');
+  expect(doneEntry.find('.diff-after').text()).toBe('done');
+
+  // the start transition came from the dashboard: a web-actor row with pending → active
+  const webRows = rows.filter((row) => row.find('.actor-chip').text() === 'web');
+  expect(webRows.length).toBeGreaterThanOrEqual(2);
+  expect(
+    webRows.some((row) =>
+      row
+        .findAll('.diff-entry')
+        .some((entry) => entry.find('.diff-field').text() === 'status' && entry.find('.diff-after').text() === 'active'),
+    ),
+  ).toBe(true);
+
+  // the create row is summarized (Created + chips), and its title entry renders
+  const createRow = rows.at(-1)!;
+  expect(createRow.find('.change-created').text()).toContain('Created');
+  const titleEntry = createRow
+    .findAll('.diff-entry')
+    .find((entry) => entry.find('.diff-field').text() === 'title')!;
+  expect(titleEntry.find('.diff-after').text()).toBe('the audited one');
+
+  // no-op fields (null → null) are cut from every row
+  for (const row of rows) {
+    for (const entry of row.findAll('.diff-entry')) {
+      expect(entry.find('.diff-before').text()).not.toBe(entry.find('.diff-after').text());
+    }
+  }
   await wrapper.unmount();
 });
 
@@ -266,7 +292,7 @@ test('the detail window follows external mutations (polling refresh)', async () 
   window.history.pushState({}, '', `/ui/tasks/${targetId}`);
   window.dispatchEvent(new Event('popstate'));
   await waitFor(() => wrapper.find('h1').exists(), 'detail rendered');
-  await waitForSection(wrapper, 'Change log');
+  await waitForSection(wrapper, 'History');
 
   // an agent mutates the task behind the human's back
   const patch = await fetch(`${daemon.baseUrl}/tasks/${targetId}`, {

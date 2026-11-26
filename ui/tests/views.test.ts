@@ -89,7 +89,7 @@ afterAll(async () => {
 });
 
 function derive(view: ViewName, scope: Scope = 'all', visibility: Visibility = NO_TOGGLES, expanded: Set<number> = new Set()) {
-  return buildTree(tasks, { view, scope, visibility, now: NOW, expanded });
+  return buildTree(tasks, { view, scope, visibility, now: NOW, expanded, query: '' });
 }
 
 function titles(nodes: ReturnType<typeof derive>): string[] {
@@ -158,7 +158,7 @@ test('today view: a view-matching child whose parent is out of view surfaces top
   tasks = (await (await fetch(`${daemon.baseUrl}/tasks?view=all`)).json()).tasks as Task[];
 
   const titlesNow = titles(
-    buildTree(tasks, { view: 'today', scope: 'all', visibility: NO_TOGGLES, now: NOW, expanded: new Set([parentId]) }),
+    buildTree(tasks, { view: 'today', scope: 'all', visibility: NO_TOGGLES, now: NOW, expanded: new Set([parentId]), query: '' }),
   );
   expect(titlesNow).toContain('standalone overdue');
   expect(titlesNow).toContain('child a');
@@ -168,7 +168,7 @@ test('today view: a view-matching child whose parent is out of view surfaces top
   // restore: strip the child's due again
   await patch(child.id, { due: null });
   tasks = (await (await fetch(`${daemon.baseUrl}/tasks?view=all`)).json()).tasks as Task[];
-  const after = buildTree(tasks, { view: 'today', scope: 'all', visibility: NO_TOGGLES, now: NOW, expanded: new Set([parentId]) });
+  const after = buildTree(tasks, { view: 'today', scope: 'all', visibility: NO_TOGGLES, now: NOW, expanded: new Set([parentId]), query: '' });
   expect(titles(after)).toEqual(['standalone overdue']);
 });
 
@@ -194,6 +194,7 @@ test('the hidden gate is time-sensitive: included while hidden, open after it pa
     visibility: NO_TOGGLES,
     now: NOW + 25 * 3600_000,
     expanded: new Set(),
+    query: '',
   });
   expect(titles(afterHidden)).toContain('hidden task');
 });

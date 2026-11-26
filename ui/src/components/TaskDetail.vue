@@ -1,21 +1,21 @@
 <script setup lang="ts">
 import { computed, inject, onUnmounted, ref, watch } from 'vue';
 import { injectApi } from '../api';
-import { errorMessage, isoToLocal, localToIso, parseTags } from '../form';
+import { errorMessage, isoToLocal, localToIso, parseTags, timeAgo } from '../form';
 import { navigate } from '../router';
 import { legalTargets } from '../transitions';
 import type { Actor, Change, TaskDetailPayload, TaskStatus } from '../types';
 
 /**
- * The task detail page (v0.3 T5 audit window + T6 writes, hardened in the
- * v0.3 review): every stored field, the append-only annotation timeline,
- * the recorded intervals, dependencies read-only with their blocked state,
- * and the FULL change log (paged) with Actor attribution — plus the human's
- * write surface: machine-legal status transitions, field editing, and
- * annotations. The page re-polls on an interval (paused while hidden) so an
- * agent mutating the task cannot leave the audit window stale; structural
- * editing (reparent, dependencies, project re-binding) is deliberately
- * absent — agent work over MCP (ADR-0006).
+ * The task detail panel (v0.3 T5 audit window + T6 writes, redesigned in the
+ * v0.3 review pass): non-empty properties only, tinted machine-legal
+ * transition pills, the annotation timeline, intervals, read-only
+ * dependencies, and the FULL change log as a structured timeline — Actor
+ * chips, relative stamps, per-field diff rows with no-op entries cut, and
+ * create rows summarized instead of dumping every field. The panel re-polls
+ * on an interval (paused while hidden) so an agent mutating the task cannot
+ * leave the audit stale; structural editing (reparent, dependencies, project
+ * re-binding) is deliberately absent — agent work over MCP (ADR-0006).
  */
 
 const props = withDefaults(defineProps<{ id: number; pollMs?: number }>(), { pollMs: 5000 });
@@ -94,19 +94,6 @@ async function act(write: () => Promise<unknown>): Promise<void> {
   }
 }
 
-// The id watch runs the whole load chain, so it registers last — after every
-// ref and function it touches exists (immediate firing is synchronous).
-watch(
-  () => props.id,
-  (id) => {
-    void load(id);
-    startPolling();
-  },
-  { immediate: true },
-);
-
-onUnmounted(stopPolling);
-
 // ------------------------------------------------------------ transitions
 
 const targets = computed<TaskStatus[]>(() => (detail.value ? legalTargets(detail.value.task.status) : []));
@@ -166,8 +153,58 @@ function submitAnnotation(): void {
   });
 }
 
-function formatActor(actor: Actor): string {
-  return actor.kind === 'mcp' ? `mcp (${actor.clientName ?? 'unknown'})` : actor.kind;
+// ------------------------------------------------------------ change log rendering
+
+interface DiffEntry {
+  field: string;
+  before: string;
+  after: string;
+}
+
+const FIELD_NAMES: Record<string, string> = {
+  projectId: 'project',
+  parentId: 'parent',
+  hiddenUntil: 'hidden until',
+};
+
+function humanField(field: string): string {
+  return FIELD_NAMES[field] ?? field;
+}
+
+function formatValue(value: unknown): string {
+  if (value === null || value === undefined) {
+    return '—';
+  }
+  if (Array.isArray(value)) {
+    return value.length === 0 ? '(empty)' : value.join(', ');
+  }
+  if (typeof value === 'string') {
+    return value === '' ? '(empty)' : value;
+  }
+  return JSON.stringify(value);
+}
+
+/** The meaningful diff rows: no-op entries (unchanged fields) are cut. */
+function diffEntries(change: Change): DiffEntry[] {
+  return Object.entries(change.diff)
+    .filter(([field, delta]) => field === 'title' || JSON.stringify(delta.before) !== JSON.stringify(delta.after))
+    .map(([field, delta]) => ({
+      field: humanField(field),
+      before: formatValue(delta.before),
+      after: formatValue(delta.after),
+    }));
+}
+
+/** A create row: every field moved from nothing — summarize instead of dumping. */
+function createSummary(change: Change): { field: string; value: string }[] {
+  return Object.entries(change.diff)
+    .filter(([field, delta]) => field !== 'title' && delta.before === null && delta.after !== null)
+    .map(([field, delta]) => ({ field: humanField(field), value: formatValue(delta.after) }))
+    .filter((entry) => entry.value !== '(empty)');
+}
+
+function actorLabel(actor: Actor): string {
+  return actor.kind === 'mcp' ? (actor.clientName ?? 'mcp') : actor.kind;
 }
 
 function formatWhen(iso: string): string {
@@ -179,12 +216,15 @@ function formatInterval(startedAt: string, endedAt: string | null): string {
   return endedAt === null ? `${start} — active now` : `${start} — ${formatWhen(endedAt)}`;
 }
 
-/** Change rows without a field diff (the create row) describe themselves by the diff instead. */
-function describeDiff(change: Change): string {
-  const parts = Object.entries(change.diff).map(
-    ([field, delta]) => `${field}: ${JSON.stringify(delta.before)} → ${JSON.stringify(delta.after)}`,
-  );
-  return parts.length === 0 ? '(created)' : parts.join(', ');
+function formatTotal(ms: number): string {
+  if (ms < 1000) {
+    return '<1s';
+  }
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  return `${Math.round(seconds / 60)}m`;
 }
 
 async function loadDep(id: number): Promise<{ id: number; title: string; status: string; blocked: boolean } | null> {
@@ -205,12 +245,25 @@ watch(
   },
   { immediate: true, deep: true },
 );
+
+// The id watch runs the whole load chain, so it registers last — after every
+// ref and function it touches exists (immediate firing is synchronous).
+watch(
+  () => props.id,
+  (id) => {
+    void load(id);
+    startPolling();
+  },
+  { immediate: true },
+);
+
+onUnmounted(stopPolling);
 </script>
 
 <template>
   <article v-if="detail">
     <h1>{{ detail.task.title }}</h1>
-    <p>
+    <p class="detail-status">
       <span class="badge" :class="`badge-${detail.task.status}`">{{ detail.task.status }}</span>
       <span v-if="detail.task.blocked" class="badge badge-blocked">blocked</span>
       <span v-if="detail.task.progress !== null" class="progress">{{ Math.round(detail.task.progress * 100) }}%</span>
@@ -223,12 +276,13 @@ watch(
         v-for="target in targets"
         :key="target"
         type="button"
-        class="transition"
+        class="transition-pill"
+        :class="`pill-${target}`"
         @click="transitionTo(target)"
       >
         → {{ target }}
       </button>
-      <button v-if="!editing" type="button" @click="startEditing">Edit fields</button>
+      <button v-if="!editing" type="button" class="edit-toggle" @click="startEditing">✎ Edit</button>
     </section>
 
     <form v-if="editing" class="edit-form" @submit.prevent="saveEdits">
@@ -251,26 +305,36 @@ watch(
       <dl>
         <dt>Project</dt>
         <dd>{{ detail.task.projectName ?? 'Unbound' }}</dd>
-        <dt>Priority</dt>
-        <dd>{{ detail.task.priority ?? '—' }}</dd>
-        <dt>Effort</dt>
-        <dd>{{ detail.task.effort ?? '—' }}</dd>
-        <dt>Due</dt>
-        <dd>{{ detail.task.due === null ? '—' : formatWhen(detail.task.due) }}</dd>
-        <dt>Hidden until</dt>
-        <dd>{{ detail.task.hiddenUntil === null ? '—' : formatWhen(detail.task.hiddenUntil) }}</dd>
-        <dt>Parent</dt>
-        <dd>
-          <button v-if="detail.task.parentId !== null" type="button" class="link" @click="navigate(`/ui/tasks/${detail.task.parentId}`)">
-            #{{ detail.task.parentId }}
-          </button>
-          <span v-else>—</span>
-        </dd>
-        <dt>Tags</dt>
-        <dd>
-          <span v-for="tag in detail.task.tags" :key="tag" class="badge badge-soft">{{ tag }}</span>
-          <span v-if="detail.task.tags.length === 0">—</span>
-        </dd>
+        <template v-if="detail.task.priority !== null">
+          <dt>Priority</dt>
+          <dd>{{ detail.task.priority }}</dd>
+        </template>
+        <template v-if="detail.task.effort !== null">
+          <dt>Effort</dt>
+          <dd>{{ detail.task.effort }}</dd>
+        </template>
+        <template v-if="detail.task.due !== null">
+          <dt>Due</dt>
+          <dd>{{ formatWhen(detail.task.due) }}</dd>
+        </template>
+        <template v-if="detail.task.hiddenUntil !== null">
+          <dt>Hidden until</dt>
+          <dd>{{ formatWhen(detail.task.hiddenUntil) }}</dd>
+        </template>
+        <template v-if="detail.task.parentId !== null">
+          <dt>Parent</dt>
+          <dd>
+            <button type="button" class="link" @click="navigate(`/ui/tasks/${detail.task.parentId}`)">
+              #{{ detail.task.parentId }}
+            </button>
+          </dd>
+        </template>
+        <template v-if="detail.task.tags.length > 0">
+          <dt>Tags</dt>
+          <dd>
+            <span v-for="tag in detail.task.tags" :key="tag" class="tag-chip">{{ tag }}</span>
+          </dd>
+        </template>
       </dl>
     </section>
 
@@ -295,7 +359,7 @@ watch(
       </ul>
     </section>
 
-    <section class="intervals">
+    <section v-if="detail.intervals.length > 0 || detail.totalActiveMs > 0" class="intervals">
       <h2>Intervals</h2>
       <p v-if="detail.intervals.length === 0">Never active yet.</p>
       <ul>
@@ -303,16 +367,19 @@ watch(
           {{ formatInterval(interval.startedAt, interval.endedAt) }}
         </li>
       </ul>
-      <p class="meta">total active: {{ Math.round(detail.totalActiveMs / 1000) }}s</p>
+      <p v-if="detail.totalActiveMs > 0" class="meta">total active: {{ formatTotal(detail.totalActiveMs) }}</p>
     </section>
 
     <section class="annotations">
       <h2>Annotations</h2>
-      <p v-if="detail.annotations.length === 0">No annotations.</p>
+      <p v-if="detail.annotations.length === 0" class="meta">No annotations yet.</p>
       <ul>
         <li v-for="annotation in detail.annotations" :key="annotation.id">
           <blockquote>{{ annotation.body }}</blockquote>
-          <p class="meta">{{ formatWhen(annotation.createdAt) }} · {{ formatActor(annotation.actor) }}</p>
+          <p class="meta">
+            <span class="actor-chip" :class="`actor-${annotation.actor.kind}`">{{ actorLabel(annotation.actor) }}</span>
+            <span :title="formatWhen(annotation.createdAt)">{{ timeAgo(annotation.createdAt) }}</span>
+          </p>
         </li>
       </ul>
       <form class="annotate-form" @submit.prevent="submitAnnotation">
@@ -322,15 +389,35 @@ watch(
     </section>
 
     <section class="changes">
-      <h2>Change log <span class="meta">({{ changes.length }} of {{ changesTotal }})</span></h2>
-      <ul>
-        <li v-for="change in changes" :key="change.id">
-          {{ formatWhen(change.createdAt) }} · {{ formatActor(change.actor) }} · {{ describeDiff(change) }}
+      <h2>History <span class="meta">({{ changes.length }} of {{ changesTotal }})</span></h2>
+      <p v-if="changes.length === 0" class="meta">No changes recorded yet.</p>
+      <ul class="timeline">
+        <li v-for="change in changes" :key="change.id" class="change-row">
+          <span class="timeline-dot" :class="`actor-${change.actor.kind}`" />
+          <div class="change-body">
+            <div class="change-head">
+              <span class="actor-chip" :class="`actor-${change.actor.kind}`">{{ actorLabel(change.actor) }}</span>
+              <span class="change-time" :title="formatWhen(change.createdAt)">{{ timeAgo(change.createdAt) }}</span>
+            </div>
+            <p v-if="createSummary(change).length > 0" class="change-created">
+              Created
+              <span v-for="entry in createSummary(change)" :key="entry.field" class="created-chip">
+                {{ entry.field }}: {{ entry.value }}
+              </span>
+            </p>
+            <div v-for="entry in diffEntries(change)" :key="entry.field" class="diff-entry">
+              <span class="diff-field">{{ entry.field }}</span>
+              <span class="diff-before">{{ entry.before }}</span>
+              <span class="diff-arrow">→</span>
+              <span class="diff-after">{{ entry.after }}</span>
+            </div>
+          </div>
         </li>
       </ul>
       <button
         v-if="changes.length < changesTotal"
         type="button"
+        class="load-more"
         :disabled="changesLoading"
         @click="loadChangesPage()"
       >
@@ -340,5 +427,5 @@ watch(
   </article>
 
   <p v-else-if="error">{{ error }}</p>
-  <p v-else>Loading…</p>
+  <p v-else class="meta">Loading…</p>
 </template>

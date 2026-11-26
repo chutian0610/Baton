@@ -170,7 +170,7 @@ test('edit fields: title and priority update, the change log records the web act
   await wrapper.findAll('.task-row .title').find((node) => node.text() === 'to be edited')!.trigger('click');
   await waitFor(() => wrapper.find('h1').exists() && wrapper.find('h1').text() === 'to be edited', 'detail open');
 
-  const editButton = wrapper.findAll('button').find((node) => node.text() === 'Edit fields')!;
+  const editButton = wrapper.findAll('button').find((node) => node.text().includes('Edit'))!;
   await editButton.trigger('click');
   await wrapper.vm.$nextTick();
 
@@ -211,13 +211,13 @@ test('transitions: only machine-legal targets are offered; intervals open and cl
   await waitFor(() => wrapper.find('h1').exists(), 'detail open');
 
   // pending offers exactly active/waiting/done/dropped (mirrors LEGAL_TARGETS)
-  const labels = () => wrapper.findAll('button.transition').map((node) => node.text());
+  const labels = () => wrapper.findAll('.transition-pill').map((node) => node.text());
   expect(labels()).toEqual(['→ active', '→ waiting', '→ done', '→ dropped']);
 
-  await wrapper.findAll('button.transition').find((node) => node.text() === '→ active')!.trigger('click');
+  await wrapper.findAll('.transition-pill').find((node) => node.text() === '→ active')!.trigger('click');
   await waitFor(() => wrapper.text().includes('active now'), 'open interval visible');
 
-  await wrapper.findAll('button.transition').find((node) => node.text() === '→ done')!.trigger('click');
+  await wrapper.findAll('.transition-pill').find((node) => node.text() === '→ done')!.trigger('click');
   await waitFor(
     () => wrapper.findAll('.badge-done').some((node) => node.text() === 'done') && !wrapper.text().includes('active now'),
     'interval closed on done',
@@ -277,7 +277,7 @@ test('structural editing is absent: no parent, dependency, or project-rebind con
   await wrapper.findAll('.task-row .title').find((node) => node.text() === 'structurally untouched')!.trigger('click');
   await waitFor(() => wrapper.find('h1').exists(), 'detail open');
 
-  await wrapper.findAll('button').find((node) => node.text() === 'Edit fields')!.trigger('click');
+  await wrapper.findAll('button').find((node) => node.text().includes('Edit'))!.trigger('click');
   await wrapper.vm.$nextTick();
 
   const text = wrapper.find('form.edit-form').text();

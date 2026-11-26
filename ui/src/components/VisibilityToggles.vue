@@ -5,9 +5,10 @@ import type { Scope, Visibility } from '../views';
 import type { Task } from '../types';
 
 /**
- * The three visibility toggles (v0.3 T4, spec: the observer's view must not
- * inherit the machine views' filtering rules): each re-adds its set on top of
- * the current view and labels it with a live count inside the current scope.
+ * The visibility filter chips (v0.3 redesign): pill-shaped toggles instead of
+ * bare checkboxes — muted until active, filled when on, each with a live
+ * count inside the current scope. The search box lives beside them in the
+ * list toolbar (App.vue).
  */
 
 const props = defineProps<{
@@ -36,7 +37,7 @@ const counts = computed(() => {
   return { done, dropped, hidden };
 });
 
-const TOGGLES: { key: keyof Visibility; label: string; title: string }[] = [
+const CHIPS: { key: keyof Visibility; label: string; title: string }[] = [
   { key: 'showDone', label: 'done', title: 'Show done tasks' },
   { key: 'showDropped', label: 'dropped', title: 'Show dropped tasks' },
   { key: 'showHidden', label: 'hidden', title: 'Show tasks hidden until a future time' },
@@ -48,13 +49,15 @@ function flip(key: keyof Visibility, event: Event): void {
 </script>
 
 <template>
-  <label v-for="toggle in TOGGLES" :key="toggle.key" class="visibility-toggle" :title="toggle.title">
-    <input
-      type="checkbox"
-      :checked="visibility[toggle.key]"
-      @change="flip(toggle.key, $event)"
-    />
-    {{ toggle.label }}
-    <span class="count">{{ counts[toggle.key === 'showDone' ? 'done' : toggle.key === 'showDropped' ? 'dropped' : 'hidden'] }}</span>
+  <label
+    v-for="chip in CHIPS"
+    :key="chip.key"
+    class="filter-chip"
+    :class="{ active: visibility[chip.key] }"
+    :title="chip.title"
+  >
+    <input type="checkbox" :checked="visibility[chip.key]" @change="flip(chip.key, $event)" />
+    {{ chip.label }}
+    <span class="chip-count">{{ counts[chip.key === 'showDone' ? 'done' : chip.key === 'showDropped' ? 'dropped' : 'hidden'] }}</span>
   </label>
 </template>
